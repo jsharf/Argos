@@ -1,0 +1,3 @@
+[submodule "host/netpipe"]
+	path = host/netpipe
+	url = https://github.com/jsharf/netpipe.git
