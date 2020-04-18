@@ -1,6 +1,10 @@
 #include "host/netpipe/tcp.h"
 
+#include <unistd.h>
+
+#include <atomic>
 #include <cassert>
+#include <thread>
 
 int main(int argc, char *argv[]) {
   if (argc != 3) {
@@ -30,6 +34,16 @@ Host: 192.168.1.104:81
     std::cerr << "Issue opening stdout in binary mode.";
   }
 
+  cam::CamParser http_parser;
+  std::atomic<bool> parsing_done = false;
+
+  // Open a thread
+  std::thread parse_thread([&http_parser, &parsing_done]() {
+    while (!parsing_done && http_parser.Poll()) {
+      usleep(10);
+    }
+  });
+
   for (int i = 0; i < 20000; ++i) {
     uint8_t recv_buffer[256];
     int data_len = socket.Read(recv_buffer, sizeof(recv_buffer)-1);
@@ -38,21 +52,22 @@ Host: 192.168.1.104:81
       return 0;
     }
     recv_buffer[data_len] = '\0';
-
-    int bytes_written = 0;
-    while (bytes_written < data_len) {
-      int bytes =
-          fwrite(recv_buffer + bytes_written, 1, data_len - bytes_written, out);
-      if (bytes < 0) {
-        std::cerr << "Error writing output." << std::endl;
-        fclose(out);
-        return -1;
+    http_parser.InsertBinary(recv_buffer, data_len);
+    if (http_parser.IsImageAvailable()) {
+      std::cerr << "Image is available. Retreiving..." << std::endl;
+      while (int bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer)); bytes_read != 0) {
+        int bytes = fwrite(recv_buffer, 1, data_len, out);
+        if (bytes < data_len) {
+          std::cerr << "Bytes lost from image!" << std::endl;
+        }
       }
-      bytes_written += bytes;
     }
-    usleep(100);
+    usleep(10);
   }
-
+  parsing_done = true;
+  parse_thread.join();
   fclose(out);
+
+  std::cerr << "DONE." << std::endl;
   return 0;
 }

@@ -2,7 +2,8 @@ cc_binary(
     name = "host_client",
     srcs = ["host_client.cc"],
     deps = [
-        "//host/netpipe:tcp"
+        ":cam_parser",
+        "//host/netpipe:tcp",
     ],
 )
 
