@@ -5,6 +5,9 @@
 #include <thread>
 #include <mutex>
 #include <vector>
+#include <queue>
+#include <deque>
+
 
 namespace cam {
 
@@ -12,10 +15,10 @@ namespace cam {
 // which calls Poll() a lot.
 class CamParser {
   public:
-    CamParser(){}
+    CamParser() : state_(HTTP_RESPONSE), parsed_{} {}
 
     void InsertBinary(const uint8_t *data, size_t len);
-    bool IsImageAvailable() const;
+    bool IsImageAvailable();
 
     // Call to drive parsing.
     bool Poll();
@@ -60,8 +63,8 @@ class CamParser {
 
     bool WaitingForChunk();
 
-    bool ConsumeHeaderLine();
-    bool ConsumeLine();
+    bool ConsumeHeaderLine(std::vector<uint8_t> *value);
+    bool ConsumeLine(std::vector<uint8_t> *value);
     void RewindToSeparator();
 
     std::mutex lock_;

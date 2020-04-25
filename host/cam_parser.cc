@@ -1,17 +1,19 @@
 #include "host/cam_parser.h"
 
 #include <inttypes.h>
+#include <iostream>
 #include <stdio.h>
 #include <cassert>
+#include <cstring>
 
 namespace cam {
 
 void CamParser::InsertBinary(const uint8_t *data, size_t len) {
   std::lock_guard<std::mutex> guard(lock_);
-  in_buffer_.insert(v.end(), data, data + len);
+  in_buffer_.insert(in_buffer_.end(), data, data + len);
 }
 
-bool CamParser::IsImageAvailable() const {
+bool CamParser::IsImageAvailable() {
   std::lock_guard<std::mutex> guard(lock_);
   return images_.size() != 0;
 }
@@ -32,7 +34,7 @@ bool CamParser::HttpResponseConsumed() {
     // No need to reset parser state since we're already at the beginning.
     return false;
   }
-  parsed_.http_status = status_code;
+  parsed_.status_code = status_code;
   return true;
 }
 
@@ -48,7 +50,7 @@ bool CamParser::MultipartConsumed() {
   int matched = std::sscanf(
       reinterpret_cast<const char *>(line.data()),
       "Content-Type: multipart/x-mixed-replace;boundary=%255s\r\n",
-      response_.boundary);
+      parsed_.boundary);
   if ((matched == 0)) {
     return false;
   }
@@ -65,7 +67,7 @@ bool CamParser::FramerateConsumed() {
   line.push_back('\0');
 
   int matched = std::sscanf(reinterpret_cast<const char *>(line.data()),
-                            "X-Framerate: %i\r\n", &response_.frame_rate);
+                            "X-Framerate: %i\r\n", &parsed_.frame_rate);
   if ((matched == 0)) {
     return false;
   }
@@ -80,7 +82,7 @@ bool CamParser::SeparatorConsumed() {
     std::cerr << "Was looking for separator, but couldn't find in current "
                  "chunk. Waiting for next chunk. This should never happen."
               << std::endl;
-    chunk_.reset();
+    chunk_.clear();
     return false;
   }
 
@@ -101,7 +103,7 @@ bool CamParser::JpegContentTypeConsumed() {
     std::cerr << "Was looking for JpegContentType, but couldn't find in current "
                  "chunk. Waiting for next chunk. This should never happen."
               << std::endl;
-    chunk_.reset();
+    chunk_.clear();
     return false;
   }
 
@@ -137,7 +139,7 @@ bool CamParser::ContentLengthConsumed() {
     std::cerr << "Was looking for ContentLength, but couldn't find in current "
                  "chunk. Waiting for next chunk. This should never happen."
               << std::endl;
-    chunk_.reset();
+    chunk_.clear();
     return false;
   }
 
@@ -166,7 +168,7 @@ bool CamParser::EndOfHeaderConsumed() {
   }
 
   // Now that we've extracted the bytes, suck them out of in_buffer_.
-  in_buffer_.remove(in_buffer_.begin(), iter + 4);
+  in_buffer_.erase(in_buffer_.begin(), iter + 4);
   return true;
 }
 
@@ -178,28 +180,28 @@ bool CamParser::EndOfMultipartHeaderConsumed() {
   }
 
   // Now that we've extracted the bytes, suck them out of in_buffer_.
-  chunk_.remove(chunk_.begin(), iter + 4);
+  chunk_.erase(chunk_.begin(), iter + 4);
   return true;
 }
 
 bool CamParser::JpegConsumed() {
-  if (chunk_.size() < parsed_.jpeg_length) {
+  if (chunk_.size() < ((size_t)parsed_.jpeg_length)) {
     std::cerr << "Chunk received is much smaller than expected JPEG image. "
                  "This shouldn't really happen. Waiting for next chunk."
-              << std::endl;"
-    chunk_.reset();
+              << std::endl;
+    chunk_.clear();
     return false;
   }
-  images_.push_back({
+  images_.push({
       /*image=*/{chunk_.begin(), chunk_.begin() + parsed_.jpeg_length},
-      /*size=*/parsed_.jpeg_length,
+      /*size=*/(size_t)parsed_.jpeg_length,
       /*index=*/0
   });
-  chunk_.remove(chunk_.begin(), chunk_.begin() + parsed_.jpeg_length);
+  chunk_.erase(chunk_.begin(), chunk_.begin() + parsed_.jpeg_length);
   return true;
 }
 
-bool CamParser::ConsumeHeaderLine(std::vector<uint8_t>& value) {
+bool CamParser::ConsumeHeaderLine(std::vector<uint8_t> *value) {
   // Look for \r.
   auto iter = std::find(in_buffer_.begin(), in_buffer_.end(), '\r');
   if (iter == in_buffer_.end()) {
@@ -212,13 +214,13 @@ bool CamParser::ConsumeHeaderLine(std::vector<uint8_t>& value) {
   }
 
   // The + 1 at the end is so that the newline gets inserted into value.
-  value.insert(value.end(), in_buffer_.begin(), iter + 1); 
+  value->insert(value->end(), in_buffer_.begin(), iter + 1); 
   // Now that we've extracted the bytes, suck them out of in_buffer_.
-  in_buffer_.remove(in_buffer_.begin(), iter + 1);
+  in_buffer_.erase(in_buffer_.begin(), iter + 1);
   return true;
 }
 
-bool CamParser::ConsumeLine(std::vector<uint8_t>& value) {
+bool CamParser::ConsumeLine(std::vector<uint8_t> *value) {
   // Look for \r.
   auto iter = std::find(chunk_.begin(), chunk_.end(), '\r');
   if (iter == chunk_.end()) {
@@ -231,9 +233,9 @@ bool CamParser::ConsumeLine(std::vector<uint8_t>& value) {
   }
 
   // The + 1 at the end is so that the newline gets inserted into value.
-  value.insert(value.end(), chunk_.begin(), iter + 1); 
+  value->insert(value->end(), chunk_.begin(), iter + 1); 
   // Now that we've extracted the bytes, suck them out of in_buffer_.
-  chunk_.remove(chunk_.begin(), iter + 1);
+  chunk_.erase(chunk_.begin(), iter + 1);
   return true;
 }
 
@@ -249,7 +251,7 @@ bool CamParser::WaitingForChunk() {
   }
 
   if (next_chunk_size_ != -1) {
-    if (in_buffer_.size() < next_chunk_size_) {
+    if (in_buffer_.size() < (size_t)next_chunk_size_) {
       return true;
     }
 
@@ -262,7 +264,9 @@ bool CamParser::WaitingForChunk() {
     chunk_.resize(next_chunk_size_);
     auto chunk_end = in_buffer_.begin() + next_chunk_size_;
     std::copy(in_buffer_.begin(), chunk_end, chunk_.begin());
-    in_buffer_.remove(in_buffer_.begin(), chunk_end);
+    in_buffer_.erase(in_buffer_.begin(), chunk_end);
+    std::string chunk_str(chunk_.begin(), chunk_.end());
+    std::cout << "Chunk parsed: " << std::endl << chunk_str;
     next_chunk_size_ = -1;
     return false;
   }
@@ -303,9 +307,11 @@ bool CamParser::WaitingForChunk() {
   // all we get is the unsafe strtol, which forces you to use C-strings.
   size_hex.push_back(0);
 
+  std::string chunk_size_str(size_hex.begin(), size_hex.end());
+  std::cout << "Parsing chunk size (hex): " << chunk_size_str << "@ state: " << state_ << std::endl;
   int chunk_size = strtol(reinterpret_cast<char *>(size_hex.data()), nullptr, 16);
   next_chunk_size_ = chunk_size;
-  in_buffer_.remove(in_buffer_.begin(), end_of_size + 2);
+  in_buffer_.erase(in_buffer_.begin(), end_of_size + 2);
   return true;
 }
 
@@ -335,13 +341,13 @@ bool CamParser::Poll() {
     case END_OF_HEADER:
       if (EndOfHeaderConsumed()) {
         state_ = SEPARATOR;
-        chunk_.reset();
+        chunk_.clear();
       }
       break;
     case SEPARATOR:
       if (SeparatorConsumed()) {
         state_ = JPEG_CONTENT_TYPE;
-        chunk_.reset();
+        chunk_.clear();
       }
       break;
     case JPEG_CONTENT_TYPE:
@@ -357,7 +363,7 @@ bool CamParser::Poll() {
     case END_OF_MULTIPART_HEADER:
       if (EndOfMultipartHeaderConsumed())  {
         state_ = CONSUME_JPEG;
-        chunk_.reset();
+        chunk_.clear();
       } else {
         // If there's no more lines available in the current chunk, mark it as
         // invalid and wait for a new chunk.
@@ -365,7 +371,7 @@ bool CamParser::Poll() {
                      "in current chunk. Waiting for next chunk. This should "
                      "never happen."
                   << std::endl;
-        chunk_.reset();
+        chunk_.clear();
       }
       break;
     case CONSUME_JPEG:
@@ -396,7 +402,7 @@ size_t CamParser::RetrieveJpeg(uint8_t *data, size_t len) {
     images_.pop();
     return 0;
   }
-  size_t bytes = min(len, bytes_remaining);
+  size_t bytes = std::min(len, bytes_remaining);
   memcpy(data, images_.front().image.data() + images_.front().index, bytes);
   images_.front().index += bytes;
   return bytes;
