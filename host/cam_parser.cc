@@ -163,11 +163,15 @@ bool CamParser::ContentLengthConsumed() {
 bool CamParser::EndOfHeaderConsumed() {
   std::vector<uint8_t> end_of_header = {0xd, 0xa, 0xd, 0xa};
   auto iter = std::search(in_buffer_.begin(), in_buffer_.end(), end_of_header.begin(), end_of_header.end());
+  std::string in_buffer_str(in_buffer_.begin(), in_buffer_.end());
+  std::cout << "end of header: " << in_buffer_str;
   if (iter == in_buffer_.end()) {
     return false;
   }
 
   // Now that we've extracted the bytes, suck them out of in_buffer_.
+  std::string end_of_header_str(in_buffer_.begin(), iter + 4);
+  std::cout << "End of header consumed: " << end_of_header_str << std::endl;
   in_buffer_.erase(in_buffer_.begin(), iter + 4);
   return true;
 }
@@ -325,43 +329,50 @@ bool CamParser::Poll() {
   switch (state_) {
     case HTTP_RESPONSE:
       if (HttpResponseConsumed()) {
+        std::cout << "HttpResponseConsumed" << std::endl;
         state_ = MULTIPART;
       }
       break;
     case MULTIPART:
       if (MultipartConsumed()) {
+        std::cout << "MultipartConsumed" << std::endl;
         state_ = FRAMERATE;
       }
       break;
     case FRAMERATE:
       if (FramerateConsumed()) {
+        std::cout << "FramerateConsumed" << std::endl;
         state_ = END_OF_HEADER;
       }
       break;
     case END_OF_HEADER:
       if (EndOfHeaderConsumed()) {
+        std::cout << "EndOfHeaderConsumed" << std::endl;
         state_ = SEPARATOR;
-        chunk_.clear();
       }
       break;
     case SEPARATOR:
       if (SeparatorConsumed()) {
+        std::cout << "SeparatorConsumed" << std::endl;
         state_ = JPEG_CONTENT_TYPE;
         chunk_.clear();
       }
       break;
     case JPEG_CONTENT_TYPE:
       if (JpegContentTypeConsumed()) {
+        std::cout << "JpegContentTypeConsumed" << std::endl;
         state_ = CONTENT_LENGTH;
       }
       break;
     case CONTENT_LENGTH:
       if (ContentLengthConsumed()) {
+        std::cout << "ContentLengthConsumed" << std::endl;
         state_ = END_OF_MULTIPART_HEADER;
       }
       break;
     case END_OF_MULTIPART_HEADER:
       if (EndOfMultipartHeaderConsumed())  {
+        std::cout << "EndOfMultipartHeaderConsume" << std::endl;
         state_ = CONSUME_JPEG;
         chunk_.clear();
       } else {
@@ -376,6 +387,7 @@ bool CamParser::Poll() {
       break;
     case CONSUME_JPEG:
       if (JpegConsumed()) {
+        std::cout << "JpegConsumed" << std::endl;
         // Loop back to looking for the next separator.
         state_ = SEPARATOR;
       }
