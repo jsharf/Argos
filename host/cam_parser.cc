@@ -161,18 +161,15 @@ bool CamParser::ContentLengthConsumed() {
 }
 
 bool CamParser::EndOfHeaderConsumed() {
-  std::vector<uint8_t> end_of_header = {0xd, 0xa, 0xd, 0xa};
+  std::vector<uint8_t> end_of_header = {0xd, 0xa};
   auto iter = std::search(in_buffer_.begin(), in_buffer_.end(), end_of_header.begin(), end_of_header.end());
-  std::string in_buffer_str(in_buffer_.begin(), in_buffer_.end());
-  std::cout << "end of header: " << in_buffer_str;
   if (iter == in_buffer_.end()) {
     return false;
   }
 
   // Now that we've extracted the bytes, suck them out of in_buffer_.
   std::string end_of_header_str(in_buffer_.begin(), iter + 4);
-  std::cout << "End of header consumed: " << end_of_header_str << std::endl;
-  in_buffer_.erase(in_buffer_.begin(), iter + 4);
+  in_buffer_.erase(in_buffer_.begin(), iter + 2);
   return true;
 }
 
@@ -196,11 +193,9 @@ bool CamParser::JpegConsumed() {
     chunk_.clear();
     return false;
   }
-  images_.push({
-      /*image=*/{chunk_.begin(), chunk_.begin() + parsed_.jpeg_length},
-      /*size=*/(size_t)parsed_.jpeg_length,
-      /*index=*/0
-  });
+  images_.push({.image = {chunk_.begin(), chunk_.begin() + parsed_.jpeg_length},
+                .size = (size_t)parsed_.jpeg_length,
+                .index = 0});
   chunk_.erase(chunk_.begin(), chunk_.begin() + parsed_.jpeg_length);
   return true;
 }
@@ -269,8 +264,6 @@ bool CamParser::WaitingForChunk() {
     auto chunk_end = in_buffer_.begin() + next_chunk_size_;
     std::copy(in_buffer_.begin(), chunk_end, chunk_.begin());
     in_buffer_.erase(in_buffer_.begin(), chunk_end);
-    std::string chunk_str(chunk_.begin(), chunk_.end());
-    std::cout << "Chunk parsed: " << std::endl << chunk_str;
     next_chunk_size_ = -1;
     return false;
   }
@@ -312,7 +305,8 @@ bool CamParser::WaitingForChunk() {
   size_hex.push_back(0);
 
   std::string chunk_size_str(size_hex.begin(), size_hex.end());
-  std::cout << "Parsing chunk size (hex): " << chunk_size_str << "@ state: " << state_ << std::endl;
+  int size = strtol(chunk_size_str.c_str(), nullptr, 16);
+  std::cout << "Parsing chunk size (hex): " << size << " @ state: " << state_ << std::endl;
   int chunk_size = strtol(reinterpret_cast<char *>(size_hex.data()), nullptr, 16);
   next_chunk_size_ = chunk_size;
   in_buffer_.erase(in_buffer_.begin(), end_of_size + 2);

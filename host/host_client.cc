@@ -56,15 +56,15 @@ Host: 192.168.1.104:81
     recv_buffer[data_len] = '\0';
     http_parser.InsertBinary(recv_buffer, data_len);
     if (http_parser.IsImageAvailable()) {
-      std::cerr << "Image is available. Retreiving..." << std::endl;
+      std::cerr << "Image is available" << std::endl;
       int bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
-      while (bytes_read != 0) {
-        int bytes = fwrite(recv_buffer, 1, data_len, out);
-        if (bytes < data_len) {
-          std::cerr << "Bytes lost from image!" << std::endl;
-        }
-        bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
-      }
+      //while (bytes_read != 0) {
+      //  int bytes = fwrite(recv_buffer, 1, data_len, out);
+      //  if (bytes < data_len) {
+      //    std::cerr << "Bytes lost from image!" << std::endl;
+      //  }
+      //  bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
+      //}
     }
     usleep(10);
   }
