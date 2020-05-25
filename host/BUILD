@@ -6,6 +6,7 @@ cc_binary(
     deps = [
         ":cam_parser",
         "//host/netpipe:tcp",
+        "@libjpeg_turbo//:jpeg",
     ],
 )
 
