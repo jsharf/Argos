@@ -83,11 +83,18 @@ Host: 192.168.1.104:81
       //  bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
       //}
     }
+    ImGui::NewFrame();
     ImGui_ImplSDL2_NewFrame(window);
     SDL_Event event;
     if (SDL_PollEvent(&event)) {
       ImGui_ImplSDL2_ProcessEvent(&event);
     }
+    // ImGui UI defined here.
+    ImGui::ShowDemoWindow();
+    // End of ImGui UI definition.
+    ImGui::Render();
+    ImGuiSDL::Render(ImGui::GetDrawData());
+    canvas.Render();
     usleep(10);
   }
   parsing_done = true;
