@@ -24,6 +24,7 @@ int main(int argc, char *argv[]) {
   auto *renderer = canvas.renderer();
   auto *window = canvas.window();
 
+  IMGUI_CHECKVERSION();
   ImGui::CreateContext();
 	ImGuiSDL::Initialize(renderer, 800, 600);
   ImGui_ImplSDL2_InitForOpenGL(window, nullptr);
@@ -74,24 +75,33 @@ Host: 192.168.1.104:81
       std::cerr << "Image is available" << std::endl;
       int bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
       // std::pair<uint8_t *, size_t> buffer = decode_jpeg(recv_buffer, bytes_read);
+      // convert image to SDL texture.
+      // auto texture = SDL_CreateRgbTextureFrom(...);
+    }
 
-      //while (bytes_read != 0) {
-      //  int bytes = fwrite(recv_buffer, 1, data_len, out);
-      //  if (bytes < data_len) {
-      //    std::cerr << "Bytes lost from image!" << std::endl;
-      //  }
-      //  bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
-      //}
-    }
-    ImGui::NewFrame();
-    ImGui_ImplSDL2_NewFrame(window);
+    // UI handling.
+    ImGuiIO& io = ImGui::GetIO();
     SDL_Event event;
-    if (SDL_PollEvent(&event)) {
+    while (SDL_PollEvent(&event)) {
       ImGui_ImplSDL2_ProcessEvent(&event);
+      if (event.type == SDL_QUIT) return 0;
+			if (event.type == SDL_WINDOWEVENT) {
+				if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+					io.DisplaySize.x = static_cast<float>(event.window.data1);
+					io.DisplaySize.y = static_cast<float>(event.window.data2);
+				}
+			}
     }
+    ImGui_ImplSDL2_NewFrame(window);
+    io.DeltaTime = 1 / 60.0f;
+    ImGui::NewFrame();
     // ImGui UI defined here.
+    // Code to actually display image: ...
+    // ImGui::Image(texture, ImVec2(100, 100));
+    // delete this later:
     ImGui::ShowDemoWindow();
     // End of ImGui UI definition.
+
     ImGui::Render();
     ImGuiSDL::Render(ImGui::GetDrawData());
     canvas.Render();
