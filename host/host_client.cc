@@ -1,8 +1,12 @@
 #include "host/netpipe/tcp.h"
 #include "host/cam_parser.h"
+#include "external/linux_sdl/include/SDL.h"
+#include "external/graphics/sdl_canvas.h"
+#include "external/imgui_sdl/imgui_sdl.h"
+#include "external/dear_imgui/imgui.h"
+#include "external/dear_imgui/examples/imgui_impl_sdl.h"
 
 #include <unistd.h>
-
 #include <atomic>
 #include <cassert>
 #include <thread>
@@ -12,6 +16,17 @@ int main(int argc, char *argv[]) {
     std::cerr << "Usage: host_client server_ip server_port." << std::endl;
     return -1;
   }
+
+  // SDL scene.
+  const int width = 800;
+  const int height = 600;
+  SdlCanvas canvas(width, height);
+  auto *renderer = canvas.renderer();
+  auto *window = canvas.window();
+
+  ImGui::CreateContext();
+	ImGuiSDL::Initialize(renderer, 800, 600);
+  ImGui_ImplSDL2_InitForOpenGL(window, nullptr);
 
   std::string address(argv[1], strlen(argv[1]));
   int port = strtol(argv[2], nullptr, 10);
@@ -58,6 +73,8 @@ Host: 192.168.1.104:81
     if (http_parser.IsImageAvailable()) {
       std::cerr << "Image is available" << std::endl;
       int bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
+      // std::pair<uint8_t *, size_t> buffer = decode_jpeg(recv_buffer, bytes_read);
+
       //while (bytes_read != 0) {
       //  int bytes = fwrite(recv_buffer, 1, data_len, out);
       //  if (bytes < data_len) {
@@ -66,11 +83,20 @@ Host: 192.168.1.104:81
       //  bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
       //}
     }
+    ImGui_ImplSDL2_NewFrame(window);
+    SDL_Event event;
+    if (SDL_PollEvent(&event)) {
+      ImGui_ImplSDL2_ProcessEvent(&event);
+    }
     usleep(10);
   }
   parsing_done = true;
   parse_thread.join();
   fclose(out);
+
+  ImGuiSDL::Deinitialize();
+  ImGui::DestroyContext();
+  ImGui_ImplSDL2_Shutdown();
 
   std::cerr << "DONE." << std::endl;
   return 0;

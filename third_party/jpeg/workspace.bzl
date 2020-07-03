@@ -1,4 +1,4 @@
-"""loads the jpeg library, used by TF."""
+"""loads libjpeg_turbo"""
 
 load("//third_party:repo.bzl", "third_party_http_archive")
 
