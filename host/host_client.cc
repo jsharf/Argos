@@ -28,7 +28,7 @@ struct Jpeg {
 // TJFLAG_FASTDCT
 // TJFLAG_ACCURATEDCT
 // TJFLAG_FASTUPSAMPLE
-static constexpr int kDecompressionFlags = 0;
+static constexpr int kDecompressionFlags = TJFLAG_ACCURATEDCT;
 
 Jpeg decode_jpeg(uint8_t *data, size_t bytes) {
   tjhandle operation = tjInitDecompress();
@@ -57,8 +57,8 @@ int main(int argc, char *argv[]) {
   double video_framerate = 0;
 
   // SDL scene.
-  const int width = 800;
-  const int height = 600;
+  const int width = 1280;
+  const int height = 720;
   SdlCanvas canvas(width, height);
   auto *renderer = canvas.renderer();
   auto *window = canvas.window();
@@ -106,7 +106,7 @@ Host: 192.168.1.104:81
   });
 
   for (int i = 0; i < 20000; ++i) {
-    uint8_t recv_buffer[256];
+    uint8_t recv_buffer[128 * 1024];  // 128 KB.
     int data_len = socket.Read(recv_buffer, sizeof(recv_buffer)-1);
     if (data_len == -1) {
       std::cout << "\nDone!" << std::endl;
@@ -115,6 +115,7 @@ Host: 192.168.1.104:81
     recv_buffer[data_len] = '\0';
     http_parser.InsertBinary(recv_buffer, data_len);
     if (http_parser.IsImageAvailable()) {
+      std::cout << "Images available: " << http_parser.ImagesAvailable() << std::endl;
       auto video_time = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> video_dt = video_time - previous_video_time;
       if (video_dt.count() != 0) {
@@ -172,6 +173,7 @@ Host: 192.168.1.104:81
 
     ImGui::Text("Video Framerate %f", video_framerate);
     ImGui::Text("Render Loop Framerate %f", render_framerate);
+    ImGui::Text("Frames available: %lu", http_parser.ImagesAvailable());
     ImGui::End();
     // End of ImGui UI definition.
 

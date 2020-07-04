@@ -27,6 +27,8 @@ class CamParser {
     // been fully retrieved. Image will be in the format RGB.
     size_t RetrieveJpeg(uint8_t *data, size_t len);
 
+    size_t ImagesAvailable() const { return images_.size(); }
+
   private:
     enum {
       HTTP_RESPONSE = 0,
