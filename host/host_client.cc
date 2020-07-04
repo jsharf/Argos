@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cassert>
 #include <thread>
+#include <future>
 #include <chrono>
 #include <memory>
 
@@ -19,7 +20,6 @@ struct Jpeg {
   int height;
   int subsample;
   int colorspace; 
-  uint8_t bit_depth;
   uint8_t *data;
   size_t data_size;
 };
@@ -30,24 +30,20 @@ struct Jpeg {
 // TJFLAG_FASTUPSAMPLE
 static constexpr int kDecompressionFlags = 0;
 
-std::unique_ptr<Jpeg> decode_jpeg(uint8_t *data, size_t bytes) {
+Jpeg decode_jpeg(uint8_t *data, size_t bytes) {
   tjhandle operation = tjInitDecompress();
   assert(operation != nullptr);
-  auto jpeg = std::make_unique<Jpeg>();
-  if (tjDecompressHeader3(operation, data, bytes, &jpeg->width, &jpeg->height, &jpeg->subsample, &jpeg->colorspace) < 0) {
-    return nullptr;
-  }
+  Jpeg jpeg;
+  assert(tjDecompressHeader3(operation, data, bytes, &jpeg.width, &jpeg.height, &jpeg.subsample, &jpeg.colorspace) >= 0);
 
   // Allocate the JPEG buffer. 24-bit colorspace.
   int pixelFormat = TJPF_RGB;
-  jpeg->data = (uint8_t *) tjAlloc(jpeg->width * jpeg->height * tjPixelSize[pixelFormat]);
-  jpeg->data_size = jpeg->height * 3;
-  if (tjDecompress2(operation, data, bytes, jpeg->data, jpeg->width, 0, jpeg->height,
-                      pixelFormat, kDecompressionFlags) < 0) {
-    return nullptr;
-  }
+  jpeg.data = (uint8_t *) tjAlloc(jpeg.width * jpeg.height * tjPixelSize[pixelFormat]);
+  jpeg.data_size = jpeg.height * 3;
+  assert(tjDecompress2(operation, data, bytes, jpeg.data, jpeg.width, 0, jpeg.height,
+                      pixelFormat, kDecompressionFlags) >= 0);
   tjDestroy(operation);
-  return std::move(jpeg);
+  return jpeg;
 }
 
 int main(int argc, char *argv[]) {
@@ -66,6 +62,9 @@ int main(int argc, char *argv[]) {
   SdlCanvas canvas(width, height);
   auto *renderer = canvas.renderer();
   auto *window = canvas.window();
+  // Texture which contains the newest video frame.
+  std::future<Jpeg> pending_img;
+  std::unique_ptr<Jpeg> last_img;
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -115,10 +114,7 @@ Host: 192.168.1.104:81
     }
     recv_buffer[data_len] = '\0';
     http_parser.InsertBinary(recv_buffer, data_len);
-    std::unique_ptr<Jpeg> raw_img;
     if (http_parser.IsImageAvailable()) {
-      std::cerr << "Image is available" << std::endl;
-
       auto video_time = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> video_dt = video_time - previous_video_time;
       if (video_dt.count() != 0) {
@@ -138,24 +134,14 @@ Host: 192.168.1.104:81
           exit(1);
         }
       }
-      raw_img = decode_jpeg(jpeg_buffer, bytes_read);
-      assert(raw_img);
+      pending_img = std::async(std::launch::async, [&]()-> Jpeg {return decode_jpeg(jpeg_buffer, bytes_read);});
     }
-    SDL_Texture *texture = nullptr;
-    if (raw_img) {
-      SDL_Surface * image = SDL_CreateRGBSurfaceFrom(raw_img->data,
-                                          raw_img->width,
-                                          raw_img->height,
-                                          24,
-                                          3 * raw_img->width,
-                                          /*rmask=*/0xff0000,
-                                          /*gmask=*/0x00ff00,
-                                          /*bmask=*/0x0000ff,
-                                          /*amask=*/0);
-       texture = SDL_CreateTextureFromSurface(renderer, image);
+    if (pending_img.valid()) {
+      if (last_img) {
+        tjFree(last_img->data);
+      }
+      last_img = std::make_unique<Jpeg>(pending_img.get());
     }
-    // Clear the canvas before re-rendering.
-    canvas.Clear();
     // UI handling.
     ImGuiIO& io = ImGui::GetIO();
     SDL_Event event;
@@ -169,15 +155,15 @@ Host: 192.168.1.104:81
 				}
 			}
     }
+    // Clear the canvas before re-rendering.
+    canvas.Clear();
+    if (last_img) {
+      canvas.Draw24BitRgbImage(last_img->data, last_img->width, last_img->height);
+    }
     ImGui_ImplSDL2_NewFrame(window);
     io.DeltaTime = 1 / 60.0f;
     ImGui::NewFrame();
     // ImGui UI defined here.
-    ImGui::Begin("Video Stream");
-    if (texture != nullptr) {
-      ImGui::Image(texture, ImVec2(raw_img->width, raw_img->height));
-    }
-    ImGui::End();
     ImGui::Begin("Info");
     auto render_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> render_dt = render_time - previous_render_time;
@@ -192,7 +178,10 @@ Host: 192.168.1.104:81
     ImGui::Render();
     ImGuiSDL::Render(ImGui::GetDrawData());
     canvas.Render();
-    usleep(100);
+    usleep(10);
+  }
+  if (last_img) {
+    tjFree(last_img->data);
   }
   parsing_done = true;
   parse_thread.join();

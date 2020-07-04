@@ -6,6 +6,6 @@ def repo():
   git_repository(
     name = "graphics",
     remote = "https://github.com/jsharf/graphics.git",
-    commit = "b8ebc5f048508a5349600faf6cf67a1116b5d6ff",
-    shallow_since = "1593769723 -0700",
+    commit = "197ee0820c9888b381a5f4105dd56e2d183b93d1",
+    shallow_since = "1593858827 -0700"
   )
