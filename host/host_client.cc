@@ -5,17 +5,60 @@
 #include "external/imgui_sdl/imgui_sdl.h"
 #include "external/dear_imgui/imgui.h"
 #include "external/dear_imgui/examples/imgui_impl_sdl.h"
+#include "external/libjpeg_turbo/turbojpeg.h"
 
 #include <unistd.h>
 #include <atomic>
 #include <cassert>
 #include <thread>
+#include <chrono>
+#include <memory>
+
+struct Jpeg {
+  int width;
+  int height;
+  int subsample;
+  int colorspace; 
+  uint8_t bit_depth;
+  uint8_t *data;
+  size_t data_size;
+};
+
+// Flags to use during decompression. Options include:
+// TJFLAG_FASTDCT
+// TJFLAG_ACCURATEDCT
+// TJFLAG_FASTUPSAMPLE
+static constexpr int kDecompressionFlags = 0;
+
+std::unique_ptr<Jpeg> decode_jpeg(uint8_t *data, size_t bytes) {
+  tjhandle operation = tjInitDecompress();
+  assert(operation != nullptr);
+  auto jpeg = std::make_unique<Jpeg>();
+  if (tjDecompressHeader3(operation, data, bytes, &jpeg->width, &jpeg->height, &jpeg->subsample, &jpeg->colorspace) < 0) {
+    return nullptr;
+  }
+
+  // Allocate the JPEG buffer. 24-bit colorspace.
+  int pixelFormat = TJPF_RGB;
+  jpeg->data = (uint8_t *) tjAlloc(jpeg->width * jpeg->height * tjPixelSize[pixelFormat]);
+  jpeg->data_size = jpeg->height * 3;
+  if (tjDecompress2(operation, data, bytes, jpeg->data, jpeg->width, 0, jpeg->height,
+                      pixelFormat, kDecompressionFlags) < 0) {
+    return nullptr;
+  }
+  tjDestroy(operation);
+  return std::move(jpeg);
+}
 
 int main(int argc, char *argv[]) {
   if (argc != 3) {
     std::cerr << "Usage: host_client server_ip server_port." << std::endl;
     return -1;
   }
+
+  auto previous_video_time = std::chrono::high_resolution_clock::now();
+  auto previous_render_time = std::chrono::high_resolution_clock::now();
+  double video_framerate = 0;
 
   // SDL scene.
   const int width = 800;
@@ -28,6 +71,7 @@ int main(int argc, char *argv[]) {
   ImGui::CreateContext();
 	ImGuiSDL::Initialize(renderer, 800, 600);
   ImGui_ImplSDL2_InitForOpenGL(window, nullptr);
+  //ImGui::StyleColorsDark();
 
   std::string address(argv[1], strlen(argv[1]));
   int port = strtol(argv[2], nullptr, 10);
@@ -71,14 +115,47 @@ Host: 192.168.1.104:81
     }
     recv_buffer[data_len] = '\0';
     http_parser.InsertBinary(recv_buffer, data_len);
+    std::unique_ptr<Jpeg> raw_img;
     if (http_parser.IsImageAvailable()) {
       std::cerr << "Image is available" << std::endl;
-      int bytes_read = http_parser.RetrieveJpeg(recv_buffer, sizeof(recv_buffer));
-      // std::pair<uint8_t *, size_t> buffer = decode_jpeg(recv_buffer, bytes_read);
-      // convert image to SDL texture.
-      // auto texture = SDL_CreateRgbTextureFrom(...);
-    }
 
+      auto video_time = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> video_dt = video_time - previous_video_time;
+      if (video_dt.count() != 0) {
+        video_framerate = 1 / (video_dt.count());
+      }
+      previous_video_time = video_time;
+
+      int bytes_read = 0;
+      int num_bytes = 0;
+      uint8_t jpeg_buffer[4 * 1024 * 1024];  // 4MB.
+      while (num_bytes = http_parser.RetrieveJpeg(
+                 jpeg_buffer + bytes_read, sizeof(jpeg_buffer) - bytes_read),
+             num_bytes > 0) {
+        bytes_read += num_bytes;
+        if ((size_t)bytes_read >= sizeof(jpeg_buffer)) {
+          std::cerr << "JPEG buffer isn't big enough, ran out of memory." << std::endl;
+          exit(1);
+        }
+      }
+      raw_img = decode_jpeg(jpeg_buffer, bytes_read);
+      assert(raw_img);
+    }
+    SDL_Texture *texture = nullptr;
+    if (raw_img) {
+      SDL_Surface * image = SDL_CreateRGBSurfaceFrom(raw_img->data,
+                                          raw_img->width,
+                                          raw_img->height,
+                                          24,
+                                          3 * raw_img->width,
+                                          /*rmask=*/0xff0000,
+                                          /*gmask=*/0x00ff00,
+                                          /*bmask=*/0x0000ff,
+                                          /*amask=*/0);
+       texture = SDL_CreateTextureFromSurface(renderer, image);
+    }
+    // Clear the canvas before re-rendering.
+    canvas.Clear();
     // UI handling.
     ImGuiIO& io = ImGui::GetIO();
     SDL_Event event;
@@ -96,16 +173,26 @@ Host: 192.168.1.104:81
     io.DeltaTime = 1 / 60.0f;
     ImGui::NewFrame();
     // ImGui UI defined here.
-    // Code to actually display image: ...
-    // ImGui::Image(texture, ImVec2(100, 100));
-    // delete this later:
-    ImGui::ShowDemoWindow();
+    ImGui::Begin("Video Stream");
+    if (texture != nullptr) {
+      ImGui::Image(texture, ImVec2(raw_img->width, raw_img->height));
+    }
+    ImGui::End();
+    ImGui::Begin("Info");
+    auto render_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> render_dt = render_time - previous_render_time;
+    double render_framerate = (render_dt.count() != 0) ? 1 / (render_dt.count()) : 0;
+    previous_render_time = render_time;
+
+    ImGui::Text("Video Framerate %f", video_framerate);
+    ImGui::Text("Render Loop Framerate %f", render_framerate);
+    ImGui::End();
     // End of ImGui UI definition.
 
     ImGui::Render();
     ImGuiSDL::Render(ImGui::GetDrawData());
     canvas.Render();
-    usleep(10);
+    usleep(100);
   }
   parsing_done = true;
   parse_thread.join();

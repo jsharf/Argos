@@ -168,6 +168,37 @@ cc_library(
 )
 
 cc_library(
+    name = "turbojpeg",
+    hdrs = [
+        "turbojpeg.h",
+        "tjutil.h",
+        "transupp.h",
+        "cdjpeg.h",
+        "cderror.h",
+        "cmyk.h",
+    ],
+    srcs = [
+        "jdatadst-tj.c",
+        "jdatasrc-tj.c",
+        "transupp.c",
+        "rdppm.c",
+        "rdbmp.c",
+        "wrppm.c",
+        "wrbmp.c",
+        "turbojpeg.c",
+    ],
+    local_defines = [
+        "PPM_SUPPORTED",
+        "BMP_SUPPORTED",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [":jpeg"],
+    linkstatic = 1,
+    includes = ["."],
+    copts = libjpegturbo_copts,
+)
+
+cc_library(
     name = "simd_x86_64",
     srcs = [
         "jchuff.h",

@@ -306,7 +306,6 @@ bool CamParser::WaitingForChunk() {
 
   std::string chunk_size_str(size_hex.begin(), size_hex.end());
   int size = strtol(chunk_size_str.c_str(), nullptr, 16);
-  std::cout << "Parsing chunk size (hex): " << size << " @ state: " << state_ << std::endl;
   int chunk_size = strtol(reinterpret_cast<char *>(size_hex.data()), nullptr, 16);
   next_chunk_size_ = chunk_size;
   in_buffer_.erase(in_buffer_.begin(), end_of_size + 2);
@@ -323,50 +322,42 @@ bool CamParser::Poll() {
   switch (state_) {
     case HTTP_RESPONSE:
       if (HttpResponseConsumed()) {
-        std::cout << "HttpResponseConsumed" << std::endl;
         state_ = MULTIPART;
       }
       break;
     case MULTIPART:
       if (MultipartConsumed()) {
-        std::cout << "MultipartConsumed" << std::endl;
         state_ = FRAMERATE;
       }
       break;
     case FRAMERATE:
       if (FramerateConsumed()) {
-        std::cout << "FramerateConsumed" << std::endl;
         state_ = END_OF_HEADER;
       }
       break;
     case END_OF_HEADER:
       if (EndOfHeaderConsumed()) {
-        std::cout << "EndOfHeaderConsumed" << std::endl;
         state_ = SEPARATOR;
       }
       break;
     case SEPARATOR:
       if (SeparatorConsumed()) {
-        std::cout << "SeparatorConsumed" << std::endl;
         state_ = JPEG_CONTENT_TYPE;
         chunk_.clear();
       }
       break;
     case JPEG_CONTENT_TYPE:
       if (JpegContentTypeConsumed()) {
-        std::cout << "JpegContentTypeConsumed" << std::endl;
         state_ = CONTENT_LENGTH;
       }
       break;
     case CONTENT_LENGTH:
       if (ContentLengthConsumed()) {
-        std::cout << "ContentLengthConsumed" << std::endl;
         state_ = END_OF_MULTIPART_HEADER;
       }
       break;
     case END_OF_MULTIPART_HEADER:
       if (EndOfMultipartHeaderConsumed())  {
-        std::cout << "EndOfMultipartHeaderConsume" << std::endl;
         state_ = CONSUME_JPEG;
         chunk_.clear();
       } else {
@@ -381,7 +372,6 @@ bool CamParser::Poll() {
       break;
     case CONSUME_JPEG:
       if (JpegConsumed()) {
-        std::cout << "JpegConsumed" << std::endl;
         // Loop back to looking for the next separator.
         state_ = SEPARATOR;
       }

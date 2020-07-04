@@ -4,12 +4,13 @@ cc_binary(
     name = "host_client",
     srcs = ["host_client.cc"],
     copts = [
+        "--std=c++17",
         "-Iexternal/",
     ],
     deps = [
         ":cam_parser",
         "//host/netpipe:tcp",
-        "@libjpeg_turbo//:jpeg",
+        "@libjpeg_turbo//:turbojpeg",
         "@graphics//:sdl_canvas",
         "@dear_imgui//:imgui",
         "@dear_imgui//:sdl_inputs",
