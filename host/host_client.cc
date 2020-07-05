@@ -14,6 +14,8 @@
 #include <future>
 #include <chrono>
 #include <memory>
+#include <thread>
+#include <mutex>
 
 struct Jpeg {
   int width;
@@ -39,12 +41,119 @@ Jpeg decode_jpeg(uint8_t *data, size_t bytes) {
   // Allocate the JPEG buffer. 24-bit colorspace.
   int pixelFormat = TJPF_RGB;
   jpeg.data = (uint8_t *) tjAlloc(jpeg.width * jpeg.height * tjPixelSize[pixelFormat]);
-  jpeg.data_size = jpeg.height * 3;
+  jpeg.data_size = jpeg.width * jpeg.height * tjPixelSize[pixelFormat];
   assert(tjDecompress2(operation, data, bytes, jpeg.data, jpeg.width, 0, jpeg.height,
                       pixelFormat, kDecompressionFlags) >= 0);
   tjDestroy(operation);
   return jpeg;
 }
+
+class RenderThread {
+  public:
+    RenderThread(int width, int height) : canvas_(width, height), width_(width), height_(height) {
+      IMGUI_CHECKVERSION();
+      ImGui::CreateContext();
+      ImGuiSDL::Initialize(canvas_.renderer(), 800, 600);
+      ImGui_ImplSDL2_InitForOpenGL(canvas_.window(), nullptr);
+      ImGui::StyleColorsDark();
+      previous_video_time_ = std::chrono::high_resolution_clock::now();
+      previous_render_time_ = std::chrono::high_resolution_clock::now(); 
+    }
+    void operator()() {
+      while (true) {
+        std::lock_guard<std::mutex> lock(control_lock_);
+        if (done_) {
+          return;
+        }
+        // UI handling.
+        ImGuiIO& io = ImGui::GetIO();
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+          ImGui_ImplSDL2_ProcessEvent(&event);
+          if (event.type == SDL_QUIT) done_ = true;
+          if (event.type == SDL_WINDOWEVENT) {
+            if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+              io.DisplaySize.x = static_cast<float>(event.window.data1);
+              io.DisplaySize.y = static_cast<float>(event.window.data2);
+            }
+          }
+        }
+        // Clear the canvas before re-rendering.
+        canvas_.Clear();
+        if (bg_texture_) {
+          SDL_RenderCopy(canvas_.renderer(), bg_texture_, NULL, NULL);
+          SDL_RenderPresent(canvas_.renderer());
+        }
+        ImGui_ImplSDL2_NewFrame(canvas_.window());
+        io.DeltaTime = 1 / 60.0f;
+        ImGui::NewFrame();
+        // ImGui UI defined here.
+        ImGui::Begin("Info");
+        auto render_time = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> render_dt = render_time - previous_render_time_;
+        double render_framerate = (render_dt.count() != 0) ? 1 / (render_dt.count()) : 0;
+        previous_render_time_ = render_time;
+
+        ImGui::Text("Video Framerate %f", video_framerate_);
+        ImGui::Text("Render Loop Framerate %f", render_framerate);
+        ImGui::End();
+        // End of ImGui UI definition.
+
+        ImGui::Render();
+        ImGuiSDL::Render(ImGui::GetDrawData());
+        canvas_.Render();
+    }
+  }
+
+  void SetBGImage(uint8_t *image, int image_size) {
+    SDL_Surface * surface = SDL_CreateRGBSurfaceFrom(image,
+                                        width_,
+                                        height_,
+                                        24,
+                                        3 * width_,
+                                        /*rmask=*/0x0000ff,
+                                        /*gmask=*/0x00ff00,
+                                        /*bmask=*/0xff0000,
+                                        /*amask=*/0);
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(canvas_.renderer(), surface);
+    {
+      std::lock_guard<std::mutex> lock(control_lock_);
+      if (bg_texture_!= nullptr) {
+        SDL_DestroyTexture(bg_texture_);
+      }
+      bg_texture_ = texture;
+    } 
+    SDL_FreeSurface(surface);
+
+    // Measure how frequently we're receiving BG images to calculate framerate.
+    auto video_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> video_dt = video_time - previous_video_time_;
+    if (video_dt.count() != 0) {
+      video_framerate_ = 1 / (video_dt.count());
+    }
+    previous_video_time_ = video_time;
+  }
+
+  bool done() { 
+    std::lock_guard<std::mutex> lock(control_lock_);
+    return done_;
+  }
+
+  void Exit() {
+    std::lock_guard<std::mutex> lock(control_lock_);
+    done_ = true;
+  }
+  private:
+    std::mutex control_lock_;
+    bool done_ = false;
+    SDL_Texture* bg_texture_ = nullptr;
+    SdlCanvas canvas_;
+    int width_, height_;
+
+    std::chrono::high_resolution_clock::time_point previous_video_time_;
+    std::chrono::high_resolution_clock::time_point previous_render_time_; 
+    double video_framerate_;
+};
 
 int main(int argc, char *argv[]) {
   if (argc != 3) {
@@ -52,25 +161,15 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  auto previous_video_time = std::chrono::high_resolution_clock::now();
-  auto previous_render_time = std::chrono::high_resolution_clock::now();
-  double video_framerate = 0;
-
   // SDL scene.
   const int width = 1280;
   const int height = 720;
-  SdlCanvas canvas(width, height);
-  auto *renderer = canvas.renderer();
-  auto *window = canvas.window();
-  // Texture which contains the newest video frame.
+
+  RenderThread render_module(width, height);
+  auto render_future = std::async(std::launch::async, [&render_module](){render_module();});
+
   std::future<Jpeg> pending_img;
   std::unique_ptr<Jpeg> last_img;
-
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-	ImGuiSDL::Initialize(renderer, 800, 600);
-  ImGui_ImplSDL2_InitForOpenGL(window, nullptr);
-  //ImGui::StyleColorsDark();
 
   std::string address(argv[1], strlen(argv[1]));
   int port = strtol(argv[2], nullptr, 10);
@@ -105,9 +204,12 @@ Host: 192.168.1.104:81
     }
   });
 
-  for (int i = 0; i < 20000; ++i) {
-    uint8_t recv_buffer[128 * 1024];  // 128 KB.
+  while (render_future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+    uint8_t recv_buffer[16 * 1024];  // 16 KB.
+    std::cout << "Read" << std::endl;
     int data_len = socket.Read(recv_buffer, sizeof(recv_buffer)-1);
+    std::cout << "Read done" << std::endl;
+    std::cout << data_len << std::endl;
     if (data_len == -1) {
       std::cout << "\nDone!" << std::endl;
       return 0;
@@ -116,12 +218,6 @@ Host: 192.168.1.104:81
     http_parser.InsertBinary(recv_buffer, data_len);
     if (http_parser.IsImageAvailable()) {
       std::cout << "Images available: " << http_parser.ImagesAvailable() << std::endl;
-      auto video_time = std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double> video_dt = video_time - previous_video_time;
-      if (video_dt.count() != 0) {
-        video_framerate = 1 / (video_dt.count());
-      }
-      previous_video_time = video_time;
 
       int bytes_read = 0;
       int num_bytes = 0;
@@ -142,52 +238,19 @@ Host: 192.168.1.104:81
         tjFree(last_img->data);
       }
       last_img = std::make_unique<Jpeg>(pending_img.get());
+      render_module.SetBGImage(last_img->data, last_img->data_size);
     }
-    // UI handling.
-    ImGuiIO& io = ImGui::GetIO();
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-      ImGui_ImplSDL2_ProcessEvent(&event);
-      if (event.type == SDL_QUIT) return 0;
-			if (event.type == SDL_WINDOWEVENT) {
-				if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-					io.DisplaySize.x = static_cast<float>(event.window.data1);
-					io.DisplaySize.y = static_cast<float>(event.window.data2);
-				}
-			}
-    }
-    // Clear the canvas before re-rendering.
-    canvas.Clear();
-    if (last_img) {
-      canvas.Draw24BitRgbImage(last_img->data, last_img->width, last_img->height);
-    }
-    ImGui_ImplSDL2_NewFrame(window);
-    io.DeltaTime = 1 / 60.0f;
-    ImGui::NewFrame();
-    // ImGui UI defined here.
-    ImGui::Begin("Info");
-    auto render_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> render_dt = render_time - previous_render_time;
-    double render_framerate = (render_dt.count() != 0) ? 1 / (render_dt.count()) : 0;
-    previous_render_time = render_time;
-
-    ImGui::Text("Video Framerate %f", video_framerate);
-    ImGui::Text("Render Loop Framerate %f", render_framerate);
-    ImGui::Text("Frames available: %lu", http_parser.ImagesAvailable());
-    ImGui::End();
-    // End of ImGui UI definition.
-
-    ImGui::Render();
-    ImGuiSDL::Render(ImGui::GetDrawData());
-    canvas.Render();
-    usleep(10);
   }
+  std::cout << "EXITED NORMALLY" << std::endl;
+
   if (last_img) {
-    tjFree(last_img->data);
+    //tjFree(last_img->data);
   }
   parsing_done = true;
   parse_thread.join();
   fclose(out);
+
+  render_module.Exit();
 
   ImGuiSDL::Deinitialize();
   ImGui::DestroyContext();
