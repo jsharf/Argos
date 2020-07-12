@@ -17,6 +17,8 @@ class CamParser {
   public:
     CamParser() : state_(HTTP_RESPONSE), parsed_{} {}
 
+    CamParser(const CamParser &rhs) = delete;
+
     void InsertBinary(const uint8_t *data, size_t len);
     bool IsImageAvailable();
 

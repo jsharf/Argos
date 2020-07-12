@@ -61,6 +61,7 @@ class RenderThread {
     }
     void operator()() {
       while (true) {
+        usleep(1000);  // 1 ms.
         std::lock_guard<std::mutex> lock(control_lock_);
         if (done_) {
           return;
@@ -106,6 +107,7 @@ class RenderThread {
   }
 
   void SetBGImage(uint8_t *image, int image_size) {
+    std::lock_guard<std::mutex> lock(control_lock_);
     SDL_Surface * surface = SDL_CreateRGBSurfaceFrom(image,
                                         width_,
                                         height_,
@@ -116,13 +118,10 @@ class RenderThread {
                                         /*bmask=*/0xff0000,
                                         /*amask=*/0);
     SDL_Texture *texture = SDL_CreateTextureFromSurface(canvas_.renderer(), surface);
-    {
-      std::lock_guard<std::mutex> lock(control_lock_);
-      if (bg_texture_!= nullptr) {
-        SDL_DestroyTexture(bg_texture_);
-      }
-      bg_texture_ = texture;
-    } 
+    if (bg_texture_!= nullptr) {
+      SDL_DestroyTexture(bg_texture_);
+    }
+    bg_texture_ = texture;
     SDL_FreeSurface(surface);
 
     // Measure how frequently we're receiving BG images to calculate framerate.

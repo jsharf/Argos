@@ -161,6 +161,7 @@ bool CamParser::ContentLengthConsumed() {
 }
 
 bool CamParser::EndOfHeaderConsumed() {
+  std::lock_guard<std::mutex> guard(lock_);
   std::vector<uint8_t> end_of_header = {0xd, 0xa};
   auto iter = std::search(in_buffer_.begin(), in_buffer_.end(), end_of_header.begin(), end_of_header.end());
   if (iter == in_buffer_.end()) {
@@ -180,7 +181,7 @@ bool CamParser::EndOfMultipartHeaderConsumed() {
     return false;
   }
 
-  // Now that we've extracted the bytes, suck them out of in_buffer_.
+  // Now that we've extracted the bytes, suck them out of chunk_.
   chunk_.erase(chunk_.begin(), iter + 4);
   return true;
 }
@@ -193,6 +194,7 @@ bool CamParser::JpegConsumed() {
     chunk_.clear();
     return false;
   }
+  std::lock_guard<std::mutex> guard(lock_);
   images_.push({.image = {chunk_.begin(), chunk_.begin() + parsed_.jpeg_length},
                 .size = (size_t)parsed_.jpeg_length,
                 .index = 0});
@@ -202,6 +204,7 @@ bool CamParser::JpegConsumed() {
 
 bool CamParser::ConsumeHeaderLine(std::vector<uint8_t> *value) {
   // Look for \r.
+  std::lock_guard<std::mutex> guard(lock_);
   auto iter = std::find(in_buffer_.begin(), in_buffer_.end(), '\r');
   if (iter == in_buffer_.end()) {
     return false;
@@ -239,6 +242,7 @@ bool CamParser::ConsumeLine(std::vector<uint8_t> *value) {
 }
 
 bool CamParser::WaitingForChunk() {
+  std::lock_guard<std::mutex> guard(lock_);
   switch (state_) {
     case HTTP_RESPONSE:
     case MULTIPART:
@@ -305,7 +309,7 @@ bool CamParser::WaitingForChunk() {
   size_hex.push_back(0);
 
   std::string chunk_size_str(size_hex.begin(), size_hex.end());
-  int size = strtol(chunk_size_str.c_str(), nullptr, 16);
+  strtol(chunk_size_str.c_str(), nullptr, 16);
   int chunk_size = strtol(reinterpret_cast<char *>(size_hex.data()), nullptr, 16);
   next_chunk_size_ = chunk_size;
   in_buffer_.erase(in_buffer_.begin(), end_of_size + 2);
