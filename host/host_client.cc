@@ -10,12 +10,14 @@
 #include <unistd.h>
 #include <atomic>
 #include <cassert>
-#include <thread>
-#include <future>
 #include <chrono>
+#include <ctime>
+#include <fstream>
+#include <future>
+#include <iostream>
 #include <memory>
-#include <thread>
 #include <mutex>
+#include <thread>
 
 struct Jpeg {
   int width;
@@ -32,18 +34,41 @@ struct Jpeg {
 // TJFLAG_FASTUPSAMPLE
 static constexpr int kDecompressionFlags = TJFLAG_ACCURATEDCT;
 
+inline constexpr char kSaveDirectoryPrefix[] = "/home/sharf/argos_data/";
+
+bool file_exists(const std::string &path) {
+  std::ifstream f(path.c_str());
+  return f.good();
+}
+
+int CalculateFrameStart() {
+  int frame_index = 1;
+  while (file_exists(std::string(kSaveDirectoryPrefix) + "frame_" + std::to_string(frame_index) + ".jpg")) {
+    frame_index++;
+  }
+  return frame_index;
+}
+
 Jpeg decode_jpeg(uint8_t *data, size_t bytes) {
   tjhandle operation = tjInitDecompress();
-  assert(operation != nullptr);
+  if (operation == nullptr) {
+    return {0, 0, 0, 0, nullptr, 0};
+  }
   Jpeg jpeg;
-  assert(tjDecompressHeader3(operation, data, bytes, &jpeg.width, &jpeg.height, &jpeg.subsample, &jpeg.colorspace) >= 0);
+  if (tjDecompressHeader3(operation, data, bytes, &jpeg.width, &jpeg.height, &jpeg.subsample, &jpeg.colorspace) < 0) {
+    tjDestroy(operation);
+    return {0, 0, 0, 0, nullptr, 0};
+  }
 
   // Allocate the JPEG buffer. 24-bit colorspace.
   int pixelFormat = TJPF_RGB;
   jpeg.data = (uint8_t *) tjAlloc(jpeg.width * jpeg.height * tjPixelSize[pixelFormat]);
   jpeg.data_size = jpeg.width * jpeg.height * tjPixelSize[pixelFormat];
-  assert(tjDecompress2(operation, data, bytes, jpeg.data, jpeg.width, 0, jpeg.height,
-                      pixelFormat, kDecompressionFlags) >= 0);
+  if (tjDecompress2(operation, data, bytes, jpeg.data, jpeg.width, 0, jpeg.height,
+                      pixelFormat, kDecompressionFlags) < 0) {
+    tjDestroy(operation);
+    return {0, 0, 0, 0, nullptr, 0};
+  }
   tjDestroy(operation);
   return jpeg;
 }
@@ -191,6 +216,12 @@ Host: 192.168.1.104:81
     fclose(out);
     std::cerr << "Issue opening stdout in binary mode.";
   }
+  
+  // Video output information.
+  constexpr int kSecondsPerFrame = 4;
+  auto last_jpeg_time = std::chrono::high_resolution_clock::now();
+  int frame_count = CalculateFrameStart();
+  std::cout << "Starting frame @ " << frame_count << std::endl;
 
   cam::CamParser http_parser;
   std::atomic<bool> parsing_done;
@@ -205,10 +236,7 @@ Host: 192.168.1.104:81
 
   while (render_future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
     uint8_t recv_buffer[16 * 1024];  // 16 KB.
-    std::cout << "Read" << std::endl;
     int data_len = socket.Read(recv_buffer, sizeof(recv_buffer)-1);
-    std::cout << "Read done" << std::endl;
-    std::cout << data_len << std::endl;
     if (data_len == -1) {
       std::cout << "\nDone!" << std::endl;
       return 0;
@@ -231,13 +259,33 @@ Host: 192.168.1.104:81
         }
       }
       pending_img = std::async(std::launch::async, [&]()-> Jpeg {return decode_jpeg(jpeg_buffer, bytes_read);});
+      auto now = std::chrono::high_resolution_clock::now();
+      if (now - last_jpeg_time > std::chrono::seconds(kSecondsPerFrame)) {
+        // Save a frame.
+        std::ofstream frame_file;
+        time_t rawtime;
+        time(&rawtime);
+        const struct tm *timeinfo = localtime(&rawtime);
+        char buffer[80];
+        strftime(buffer, sizeof(buffer), "%a_%b_%d_%T_%Z_%Y", timeinfo);
+        const std::string filename = "/home/sharf/argos_data/frame_" + std::to_string(frame_count) + "_" + std::string(buffer) + ".jpg";
+        std::cout << "Writing frame: " << filename << std::endl;
+        frame_count++;
+        frame_file.open(filename, std::ios::out | std::ios::binary);
+        frame_file.write(reinterpret_cast<const char *>(jpeg_buffer), bytes_read);
+        frame_file.close();
+        last_jpeg_time = now;
+      }
     }
     if (pending_img.valid()) {
       if (last_img) {
         tjFree(last_img->data);
       }
-      last_img = std::make_unique<Jpeg>(pending_img.get());
-      render_module.SetBGImage(last_img->data, last_img->data_size);
+      auto image = std::make_unique<Jpeg>(pending_img.get());
+      if (image->data != nullptr) {
+        last_img = std::move(image);
+        render_module.SetBGImage(last_img->data, last_img->data_size);
+      }
     }
   }
   std::cout << "EXITED NORMALLY" << std::endl;
