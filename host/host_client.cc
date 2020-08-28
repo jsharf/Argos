@@ -28,6 +28,107 @@ struct Jpeg {
   size_t data_size;
 };
 
+constexpr size_t kInputSize = 32 * 32 * 3;
+constexpr size_t kOutputSize = 10;
+
+enum Label : uint8_t {
+  AIRPLANE = 0,
+  AUTOMOBILE,
+  BIRD,
+  CAT,
+  DEER,
+  DOG,
+  FROG,
+  HORSE,
+  SHIP,
+  TRUCK
+};
+
+std::string LabelToString(uint8_t label) {
+  switch (label) {
+    case AIRPLANE:
+      return "Airplane";
+    case AUTOMOBILE:
+      return "Automobile";
+    case BIRD:
+      return "Bird";
+    case CAT:
+      return "Cat";
+    case DEER:
+      return "Deer";
+    case DOG:
+      return "Dog";
+    case FROG:
+      return "Frog";
+    case HORSE:
+      return "Horse";
+    case SHIP:
+      return "Ship";
+    case TRUCK:
+      return "Truck";
+    default:
+      return "Unknown?!?";
+  }
+}
+
+std::string OneHotEncodedOutputToString(
+    std::unique_ptr<compute::ClBuffer> buffer) {
+  buffer->MoveToCpu();
+  uint8_t max_index = 0;
+  for (size_t index = 0; index < buffer->size(); ++index) {
+    if (buffer->at(index) > buffer->at(max_index)) {
+      max_index = index;
+    }
+  }
+
+  return LabelToString(max_index);
+}
+
+struct Sample {
+  char label;
+  char pixels[kSampleSize];
+
+  explicit Sample(char data[kRecordSize]) {
+    label = data[0];
+    memcpy(&pixels[0], &data[1], kSampleSize);
+  }
+
+  std::string Label() const { return LabelToString(label); }
+
+  std::unique_ptr<compute::ClBuffer> NormalizedInput(
+      nnet::Nnet* network) const {
+    std::unique_ptr<compute::ClBuffer> input = network->MakeBuffer(kSampleSize);
+    double norm = 0;
+    for (size_t i = 0; i < kSampleSize; ++i) {
+      norm += static_cast<double>(pixels[i]) * pixels[i];
+    }
+    norm = sqrt(norm);
+    if (norm == 0) {
+      norm = 1;
+    }
+    for (size_t i = 0; i < kSampleSize; ++i) {
+      input->at(i) = static_cast<double>(pixels[i]) / norm;
+    }
+    return input;
+  }
+
+  std::unique_ptr<compute::ClBuffer> OneHotEncodedOutput(
+      nnet::Nnet* network) const {
+    // Initialize kOutputSizex1 blank column vector.
+    std::unique_ptr<compute::ClBuffer> output =
+        network->MakeBuffer(kOutputSize);
+
+    // Zero the inputs.
+    for (size_t i = 0; i < kOutputSize; ++i) {
+      output->at(i) = 0.0;
+    }
+
+    output->at(label) = 1.0;
+
+    return output;
+  }
+};
+
 // Flags to use during decompression. Options include:
 // TJFLAG_FASTDCT
 // TJFLAG_ACCURATEDCT
@@ -35,15 +136,16 @@ struct Jpeg {
 static constexpr int kDecompressionFlags = TJFLAG_ACCURATEDCT;
 
 inline constexpr char kSaveDirectoryPrefix[] = "/home/sharf/argos_data/";
+inline constexpr char kWeightFile[] = "host/network_weights.json";
 
 bool file_exists(const std::string &path) {
   std::ifstream f(path.c_str());
   return f.good();
 }
 
-int CalculateFrameStart() {
+int CalculateFrameStart(const std::string &prefix) {
   int frame_index = 1;
-  while (file_exists(std::string(kSaveDirectoryPrefix) + "frame_" + std::to_string(frame_index) + ".jpg")) {
+  while (file_exists(std::string(kSaveDirectoryPrefix) + prefix + "_" + std::to_string(frame_index) + ".jpg")) {
     frame_index++;
   }
   return frame_index;
@@ -72,6 +174,136 @@ Jpeg decode_jpeg(uint8_t *data, size_t bytes) {
   tjDestroy(operation);
   return jpeg;
 }
+
+class ImageProcessingThread {
+  public:
+    // An object identified in the latest image. Size is assumed to be 32x32
+    // pixels.
+    struct Target {
+      Label label;
+      std::pair<int, int> coordinate;
+    };
+
+    ImageProcessingThread() {
+      nnet::Architecture model(kInputSize);
+      model
+          .AddConvolutionLayer(
+              {
+                  32,  // width
+                  32,  // height
+                  3,   // R,G,B (depth).
+              },
+              {
+                  5,   // filter x size.
+                  5,   // filter y size.
+                  3,   // filter z depth size.
+                  1,   // stride.
+                  2,   // padding.
+                  16,  // number of filters.
+              })
+          .AddMaxPoolLayer(
+              /* Input size */ nnet::VolumeDimensions{32, 32, 16},
+              /* Output size */ nnet::AreaDimensions{16, 16})
+          .AddConvolutionLayer(
+              {
+                  16,  // width
+                  16,  // height
+                  16,  // R,G,B (depth).
+              },
+              {
+                  5,   // filter x size.
+                  5,   // filter y size.
+                  16,  // filter z depth size.
+                  1,   // stride.
+                  2,   // padding.
+                  20,  // number of filters.
+              })
+          .AddMaxPoolLayer(
+              /* Input size */ nnet::VolumeDimensions{16, 16, 20},
+              /* output size */ nnet::AreaDimensions{8, 8})
+          .AddConvolutionLayer(
+              {
+                  8,   // width
+                  8,   // height
+                  20,  // R,G,B (depth).
+              },
+              {
+                  5,   // filter x size.
+                  5,   // filter y size.
+                  20,  // filter z depth size.
+                  1,   // stride.
+                  2,   // padding.
+                  20,  // number of filters.
+              })
+          .AddMaxPoolLayer(/* Input size */ {8, 8, 20},
+                           /* output size */ {4, 4})
+          // No activation function, the next layer is softmax which functions as an
+          // activation function
+          .AddDenseLayer(10, symbolic::Identity)
+          .AddSoftmaxLayer(10);
+      test_net = std::make_unique<nnet::Nnet>(model, nnet::Nnet::Xavier, nnet::CrossEntropy);
+      // Load weights.
+      std::ifstream weight_file(kWeightFile);
+      std::stringstream buffer;
+      buffer << weight_file.rdbuf();
+      std::string weight_string = buffer.str();
+      if (weight_string.empty()) {
+        std::cout
+            << "Provided weight file is empty. Initializing with random weights"
+            << std::endl;
+      } else {
+        if (!test_net.LoadWeightsFromString(weight_string)) {
+          std::cerr << "Failed to load weights from file: " << weight_file_path.c_str() << std::endl;
+          return 1;
+        }
+      }
+    }
+  void InputImage(uint8_t *image, int image_size_x, int image_size_y) {
+    // This is actually a race condition since the calling thread might
+    // deallocate image* before we're done using it. Modify this function to
+    // make a copy.
+    std::lock_guard<std::mutex> lock(control_lock_);
+    latest_image_ = std::make_tuple(image, image_size_x, image_size_y);
+    latest_results_.reset();
+  }
+  void operator()() {
+    while (true) {
+      usleep(10);
+      std::lock_guard<std::mutex> lock(control_lock_);
+      if (latest_image_.first != nullptr) {
+        ScanLatestImage();
+      }
+    }
+  }
+  bool done() { 
+    std::lock_guard<std::mutex> lock(control_lock_);
+    return done_;
+  }
+  void Exit() {
+    std::lock_guard<std::mutex> lock(control_lock_);
+    done_ = true;
+  }
+  private:
+    // Scan through the latest image, searching a 32x32 pixel box
+    // for potential targets (with 16-pixel overlap between each successive
+    // box).
+    void ScanLatestImage() {
+      for (int x = 0; x < std::get<1>(latest_image_); x+= 16) {
+        for (int y = 0; y < std::get<2>(latest_image_); x+= 16) {
+          // Pull out a 32x32 slice.
+          // Run it through the neural network.
+          // Evaluate output -- is it significant? Add to targets list.
+        }
+      }
+    }
+
+    std::mutex control_lock_;
+    bool done_ = false;
+    // uint8_t *data, int size_x, int size_y.
+    std::tuple<uint8_t *, int, int> latest_image_;
+    std::vector<Target> latest_results_;
+    std::unique_ptr<nnet::Nnet> test_net;
+};
 
 class RenderThread {
   public:
@@ -180,14 +412,16 @@ class RenderThread {
 };
 
 int main(int argc, char *argv[]) {
-  if (argc != 3) {
-    std::cerr << "Usage: host_client server_ip server_port." << std::endl;
+  if (argc < 3) {
+    std::cerr << "Usage: host_client server_ip server_port [file_prefix]." << std::endl;
     return -1;
   }
 
   // SDL scene.
   const int width = 1280;
   const int height = 720;
+
+  const std::string kFilePrefix = (argc == 4) ? argv[3] : "";
 
   RenderThread render_module(width, height);
   auto render_future = std::async(std::launch::async, [&render_module](){render_module();});
@@ -218,9 +452,9 @@ Host: 192.168.1.104:81
   }
   
   // Video output information.
-  constexpr int kSecondsPerFrame = 4;
+  constexpr int kSecondsPerFrame = 1;
   auto last_jpeg_time = std::chrono::high_resolution_clock::now();
-  int frame_count = CalculateFrameStart();
+  int frame_count = CalculateFrameStart(kFilePrefix);
   std::cout << "Starting frame @ " << frame_count << std::endl;
 
   cam::CamParser http_parser;
@@ -262,18 +496,20 @@ Host: 192.168.1.104:81
       auto now = std::chrono::high_resolution_clock::now();
       if (now - last_jpeg_time > std::chrono::seconds(kSecondsPerFrame)) {
         // Save a frame.
-        std::ofstream frame_file;
-        time_t rawtime;
-        time(&rawtime);
-        const struct tm *timeinfo = localtime(&rawtime);
-        char buffer[80];
-        strftime(buffer, sizeof(buffer), "%a_%b_%d_%T_%Z_%Y", timeinfo);
-        const std::string filename = "/home/sharf/argos_data/frame_" + std::to_string(frame_count) + "_" + std::string(buffer) + ".jpg";
-        std::cout << "Writing frame: " << filename << std::endl;
-        frame_count++;
-        frame_file.open(filename, std::ios::out | std::ios::binary);
-        frame_file.write(reinterpret_cast<const char *>(jpeg_buffer), bytes_read);
-        frame_file.close();
+        if (!kFilePrefix.empty()) {
+          std::ofstream frame_file;
+          time_t rawtime;
+          time(&rawtime);
+          const struct tm *timeinfo = localtime(&rawtime);
+          char buffer[80];
+          strftime(buffer, sizeof(buffer), "%a_%b_%d_%T_%Z_%Y", timeinfo);
+          const std::string filename = "/home/sharf/argos_data/" + kFilePrefix + "_" + std::to_string(frame_count) + "_" + std::string(buffer) + ".jpg";
+          std::cout << "Writing frame: " << filename << std::endl;
+          frame_count++;
+          frame_file.open(filename, std::ios::out | std::ios::binary);
+          frame_file.write(reinterpret_cast<const char *>(jpeg_buffer), bytes_read);
+          frame_file.close();
+        }
         last_jpeg_time = now;
       }
     }

@@ -9,6 +9,7 @@ cc_binary(
     ],
     deps = [
         ":cam_parser",
+        ":network_weights",
         "//host/netpipe:tcp",
         "@libjpeg_turbo//:turbojpeg",
         "@graphics//:sdl_canvas",
@@ -16,6 +17,13 @@ cc_binary(
         "@dear_imgui//:sdl_inputs",
         "@imgui_sdl//:imgui_sdl",
         "@linux_sdl//:sdl2",
+    ],
+)
+
+filegroup(
+    name = "network_weights",
+    srcs = [
+        "network_weights.json",
     ],
 )
 
