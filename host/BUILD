@@ -7,12 +7,17 @@ cc_binary(
         "--std=c++17",
         "-Iexternal/",
     ],
+    data = [
+        ":network_weights",
+    ],
     deps = [
         ":cam_parser",
-        ":network_weights",
         "//host/netpipe:tcp",
         "@libjpeg_turbo//:turbojpeg",
         "@graphics//:sdl_canvas",
+        "@clutil//:util",
+        "@plasticity//compute:cl_buffer",
+        "@plasticity//nnet:nnet",
         "@dear_imgui//:imgui",
         "@dear_imgui//:sdl_inputs",
         "@imgui_sdl//:imgui_sdl",
