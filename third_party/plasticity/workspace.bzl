@@ -4,6 +4,6 @@ def repo():
   git_repository(
     name = "plasticity",
     remote = "https://github.com/jsharf/plasticity.git",
-    commit = "3a0a96c5a898457213f8c60ef73f2b654ca9e114",
-    shallow_since = "1598951439 -0700",
+    commit = "59c775349c598193613a3ff0be6971f15e02aace",
+    shallow_since = "1599040208 -0700",
   )
