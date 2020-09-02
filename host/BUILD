@@ -5,11 +5,25 @@ cc_binary(
     srcs = ["host_client.cc"],
     copts = [
         "--std=c++17",
+        "-O3",
         "-Iexternal/",
     ],
     data = [
         ":network_weights",
     ],
+    linkopts = select({
+        "@clutil//:osx": ["-framework OpenCL"],
+        "@clutil//:linux": [
+            "-lOpenCL",
+            "-L/usr/local/cuda-8.0/targets/x86_64-linux/lib",
+            "-L/usr/lib/x86_64-linux-gnu/",
+        ],
+        "//conditions:default": [
+            "-lOpenCL",
+            "-L/usr/local/cuda-8.0/targets/x86_64-linux/lib",
+            "-L/usr/lib/x86_64-linux-gnu/",
+        ],
+    }),
     deps = [
         ":cam_parser",
         "//host/netpipe:tcp",

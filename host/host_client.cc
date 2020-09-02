@@ -77,7 +77,7 @@ std::string LabelToString(uint8_t label) {
 
 static constexpr float kClassifierThreshold = 0.5;
 Label OneHotEncodedOutputToEnum(
-    std::unique_ptr<compute::ClBuffer> buffer) {
+    const std::unique_ptr<compute::ClBuffer> &buffer) {
   buffer->MoveToCpu();
   uint8_t max_index = 0;
   for (size_t index = 0; index < buffer->size(); ++index) {
@@ -91,10 +91,10 @@ Label OneHotEncodedOutputToEnum(
     return UNKNOWN;
   }
 
-  return max_index;
+  return static_cast<Label>(max_index);
 }
 
-void NormalizeInput(const std::unique_ptr<compute::ClBuffer> &buffer) const {
+void NormalizeInput(const std::unique_ptr<compute::ClBuffer> &buffer) {
   buffer->MoveToCpu();
   double norm = 0;
   for (size_t i = 0; i < buffer->size() ; ++i) {
@@ -104,7 +104,7 @@ void NormalizeInput(const std::unique_ptr<compute::ClBuffer> &buffer) const {
   if (norm == 0) {
     norm = 1;
   }
-  for (size_t i = 0; i < kSampleSize; ++i) {
+  for (size_t i = 0; i < kInputSize; ++i) {
     buffer->at(i) = static_cast<double>(buffer->at(i)) / norm;
   }
 }
@@ -232,9 +232,9 @@ class ImageProcessingModule {
             << "Provided weight file is empty. Initializing with random weights"
             << std::endl;
       } else {
-        if (!classifier.LoadWeightsFromString(weight_string)) {
-          std::cerr << "Failed to load weights from file: " << weight_file_path.c_str() << std::endl;
-          return 1;
+        if (!classifier->LoadWeightsFromString(weight_string)) {
+          std::cerr << "Failed to load weights from file: " << kWeightFile << std::endl;
+          std::exit(1);
         }
       }
     }
@@ -249,8 +249,7 @@ class ImageProcessingModule {
     latest_image_ = std::make_tuple(nullptr, size_x, size_y);
     std::get<0>(latest_image_) = new uint8_t[size_x * size_y * 3];  // Each pixel is 3 bytes.
     memcpy(std::get<0>(latest_image_), image, size_x * size_y * 3);
-    latest_results_.reset();
-    latest_targets_.reset();
+    latest_targets_.clear();
   }
   void operator()() {
     while (true) {
@@ -259,7 +258,7 @@ class ImageProcessingModule {
       if (done_) {
         return;
       }
-      if (latest_image_.first != nullptr) {
+      if (std::get<0>(latest_image_) != nullptr) {
         ScanLatestImage();
       }
     }
@@ -271,7 +270,7 @@ class ImageProcessingModule {
   std::vector<Target> targets() {
       std::lock_guard<std::mutex> lock(control_lock_);
       std::vector<Target> targets_copy = latest_targets_;
-      latest_targets_.reset();
+      latest_targets_.clear();
       return targets_copy;
   }
 
@@ -293,13 +292,13 @@ class ImageProcessingModule {
     void ScanLatestImage() {
       for (int x = 0; x < std::get<1>(latest_image_); x+= 16) {
         for (int y = 0; y < std::get<2>(latest_image_); y+= 16) {
-          std::unique_ptr<compute::ClBuffer> input = network->MakeBuffer(kInputSize);
+          std::unique_ptr<compute::ClBuffer> input = classifier->MakeBuffer(kInputSize);
           PopulateSlice(input, x, y, 32, 32);
           NormalizeInput(input);
-          std::unique_ptr<compute::ClBuffer> output = classifier.Evaluate(input);
+          std::unique_ptr<compute::ClBuffer> output = classifier->Evaluate(input);
           Label label = OneHotEncodedOutputToEnum(output);
           if (label != UNKNOWN) {
-            latest_results_.push_back({label, std::make_pair(x, y)});
+            latest_targets_.push_back({label, std::make_pair(x, y)});
           }
         }
       }
@@ -312,18 +311,18 @@ class ImageProcessingModule {
       // The input is RGB, but the classifier expects images in
       // <R-channel><G-channel><B-channel>, so we'll need to de-interlace all
       // the R pixels, G pixels and B pixels to make separate images.
-      assert(buffer->size() == width * height * 3);
+      assert(buffer->size() == static_cast<size_t>(width * height * 3));
 
       const int g_offset = width * height;
       const int b_offset = width * height * 2;
 
       uint8_t *image_data = std::get<0>(latest_image_);
 
-      for (size_t i = 0; i < width; ++i) {
-        for (size_t j = 0; j < height; ++j) {
+      for (int i = 0; i < width; ++i) {
+        for (int j = 0; j < height; ++j) {
           // Calculate the index in the raw image. This means *3 since RGB are
           // interlaced and offset by (x,y).
-          image_index = 3 * (i + x + (j + y) * width);
+          int image_index = 3 * (i + x + (j + y) * width);
           // R-channel.
           buffer->at(i + j * width) = image_data[image_index + 0];
           // G-channel.
@@ -338,7 +337,7 @@ class ImageProcessingModule {
     bool done_ = false;
     // uint8_t *data, int size_x, int size_y.
     std::tuple<uint8_t *, int, int> latest_image_;
-    std::vector<Target> latest_results_;
+    std::vector<Target> latest_targets_;
     std::unique_ptr<nnet::Nnet> classifier;
 };
 
@@ -395,10 +394,10 @@ class RenderThread {
 
         ImGui::Text("Video Framerate %f", video_framerate_);
         ImGui::Text("Render Loop Framerate %f", render_framerate);
-        ImGui::Text("Objects detected: %i", targets_.size());
+        ImGui::Text("Objects detected: %lu", targets_.size());
         // Render target squares.
         for (size_t i = 0; i < targets_.size(); ++i) {
-          ImGui::Text("%s at (%i, %i).", LabelToString(targets_[i].label),
+          ImGui::Text("%s at (%i, %i).", LabelToString(targets_[i].label).c_str(),
                       targets_[i].coordinate.first,
                       targets_[i].coordinate.second);
         }
@@ -458,7 +457,7 @@ class RenderThread {
     SDL_Texture* bg_texture_ = nullptr;
     SdlCanvas canvas_;
     int width_, height_;
-    std::vector<ImageProcessingModel::Target> targets_;
+    std::vector<ImageProcessingModule::Target> targets_;
 
     std::chrono::high_resolution_clock::time_point previous_video_time_;
     std::chrono::high_resolution_clock::time_point previous_render_time_; 
@@ -481,7 +480,7 @@ int main(int argc, char *argv[]) {
   auto render_future = std::async(std::launch::async, [&render_module](){render_module();});
   
   ImageProcessingModule image_processing;
-  std::thread image_processing_thread(image_processing);
+  std::thread image_processing_thread([&image_processing]() {image_processing();});
 
   std::future<Jpeg> pending_img;
   std::unique_ptr<Jpeg> last_img;
@@ -578,12 +577,16 @@ Host: 192.168.1.104:81
       if (image->data != nullptr) {
         last_img = std::move(image);
         render_module.SetBGImage(last_img->data, last_img->data_size);
-        image_processing_module.InputImage(last_img->data, last_img->data_size);
+        if (last_img->data_size != width * height * 3) {
+          std::cerr << "Could not run classifier as image did not fit the expected resolution.";
+          continue;
+        }
+        image_processing.InputImage(last_img->data, width, height);
       }
     }
 
-    if (image_processing_module.targets_available()) {
-      std::vector<Target> targets = image_processing_module.targets();
+    if (image_processing.targets_available()) {
+      std::vector<ImageProcessingModule::Target> targets = image_processing.targets();
       render_module.SetTargets(targets);
     }
   }
@@ -596,7 +599,7 @@ Host: 192.168.1.104:81
   parse_thread.join();
   fclose(out);
 
-  image_processing_module.Exit();
+  image_processing.Exit();
   render_module.Exit();
 
   image_processing_thread.join();
