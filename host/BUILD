@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_foreign_cc//tools/build_defs:make.bzl", "make")
 
 cc_binary(
     name = "host_client",
@@ -9,7 +10,7 @@ cc_binary(
         "-Iexternal/",
     ],
     data = [
-        ":network_weights",
+        ":yolov4_model",
     ],
     linkopts = select({
         "@clutil//:osx": ["-framework OpenCL"],
@@ -27,11 +28,10 @@ cc_binary(
     deps = [
         ":cam_parser",
         "//host/netpipe:tcp",
+        "//third_party/darknet:make_darknet",
         "@libjpeg_turbo//:turbojpeg",
         "@graphics//:sdl_canvas",
         "@clutil//:util",
-        "@plasticity//compute:cl_buffer",
-        "@plasticity//nnet:nnet",
         "@dear_imgui//:imgui",
         "@dear_imgui//:sdl_inputs",
         "@imgui_sdl//:imgui_sdl",
@@ -40,9 +40,10 @@ cc_binary(
 )
 
 filegroup(
-    name = "network_weights",
+    name = "yolov4_model",
     srcs = [
-        "network_weights.json",
+        "yolov4.cfg",
+        "yolov4.weights",
     ],
 )
 

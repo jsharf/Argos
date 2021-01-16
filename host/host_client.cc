@@ -6,8 +6,7 @@
 #include "dear_imgui/imgui.h"
 #include "dear_imgui/examples/imgui_impl_sdl.h"
 #include "libjpeg_turbo/turbojpeg.h"
-#include "plasticity/nnet/nnet.h"
-#include "plasticity/compute/cl_buffer.h"
+#include "darknet/include/yolo_v2_class.hpp"
 
 #include <unistd.h>
 #include <atomic>
@@ -30,85 +29,6 @@ struct Jpeg {
   size_t data_size;
 };
 
-constexpr size_t kInputSize = 32 * 32 * 3;
-constexpr size_t kOutputSize = 10;
-
-enum Label : uint8_t {
-  AIRPLANE = 0,
-  AUTOMOBILE,
-  BIRD,
-  CAT,
-  DEER,
-  DOG,
-  FROG,
-  HORSE,
-  SHIP,
-  TRUCK,
-  UNKNOWN
-};
-
-std::string LabelToString(uint8_t label) {
-  switch (label) {
-    case AIRPLANE:
-      return "Airplane";
-    case AUTOMOBILE:
-      return "Automobile";
-    case BIRD:
-      return "Bird";
-    case CAT:
-      return "Cat";
-    case DEER:
-      return "Deer";
-    case DOG:
-      return "Dog";
-    case FROG:
-      return "Frog";
-    case HORSE:
-      return "Horse";
-    case SHIP:
-      return "Ship";
-    case TRUCK:
-      return "Truck";
-    case UNKNOWN:
-    default:
-      return "Unknown";
-  }
-}
-
-static constexpr float kClassifierThreshold = 0.5;
-Label OneHotEncodedOutputToEnum(
-    const std::unique_ptr<compute::ClBuffer> &buffer) {
-  buffer->MoveToCpu();
-  uint8_t max_index = 0;
-  for (size_t index = 0; index < buffer->size(); ++index) {
-    if (buffer->at(index) > buffer->at(max_index)) {
-      max_index = index;
-    }
-  }
-
-  // If the answer isn't confident, return UNKNOWN.
-  if (buffer->at(max_index) < kClassifierThreshold) {
-    return UNKNOWN;
-  }
-
-  return static_cast<Label>(max_index);
-}
-
-void NormalizeInput(const std::unique_ptr<compute::ClBuffer> &buffer) {
-  buffer->MoveToCpu();
-  double norm = 0;
-  for (size_t i = 0; i < buffer->size() ; ++i) {
-    norm += static_cast<double>(buffer->at(i)) * buffer->at(i);
-  }
-  norm = sqrt(norm);
-  if (norm == 0) {
-    norm = 1;
-  }
-  for (size_t i = 0; i < kInputSize; ++i) {
-    buffer->at(i) = static_cast<double>(buffer->at(i)) / norm;
-  }
-}
-
 // Flags to use during decompression. Options include:
 // TJFLAG_FASTDCT
 // TJFLAG_ACCURATEDCT
@@ -116,7 +36,8 @@ void NormalizeInput(const std::unique_ptr<compute::ClBuffer> &buffer) {
 static constexpr int kDecompressionFlags = TJFLAG_ACCURATEDCT;
 
 inline constexpr char kSaveDirectoryPrefix[] = "/home/sharf/argos_data/";
-inline constexpr char kWeightFile[] = "host/network_weights.json";
+inline constexpr char kWeightFile[] = "host/yolov4.weights";
+inline constexpr char kConfigFile[] = "host/yolov4.cfg
 
 bool file_exists(const std::string &path) {
   std::ifstream f(path.c_str());
@@ -157,86 +78,7 @@ Jpeg decode_jpeg(uint8_t *data, size_t bytes) {
 
 class ImageProcessingModule {
   public:
-    // An object identified in the latest image. Size is assumed to be 32x32
-    // pixels.
-    struct Target {
-      Label label;
-      std::pair<int, int> coordinate;
-    };
-
-    ImageProcessingModule() {
-      nnet::Architecture model(kInputSize);
-      model
-          .AddConvolutionLayer(
-              {
-                  32,  // width
-                  32,  // height
-                  3,   // R,G,B (depth).
-              },
-              {
-                  5,   // filter x size.
-                  5,   // filter y size.
-                  3,   // filter z depth size.
-                  1,   // stride.
-                  2,   // padding.
-                  16,  // number of filters.
-              })
-          .AddMaxPoolLayer(
-              /* Input size */ nnet::VolumeDimensions{32, 32, 16},
-              /* Output size */ nnet::AreaDimensions{16, 16})
-          .AddConvolutionLayer(
-              {
-                  16,  // width
-                  16,  // height
-                  16,  // R,G,B (depth).
-              },
-              {
-                  5,   // filter x size.
-                  5,   // filter y size.
-                  16,  // filter z depth size.
-                  1,   // stride.
-                  2,   // padding.
-                  20,  // number of filters.
-              })
-          .AddMaxPoolLayer(
-              /* Input size */ nnet::VolumeDimensions{16, 16, 20},
-              /* output size */ nnet::AreaDimensions{8, 8})
-          .AddConvolutionLayer(
-              {
-                  8,   // width
-                  8,   // height
-                  20,  // R,G,B (depth).
-              },
-              {
-                  5,   // filter x size.
-                  5,   // filter y size.
-                  20,  // filter z depth size.
-                  1,   // stride.
-                  2,   // padding.
-                  20,  // number of filters.
-              })
-          .AddMaxPoolLayer(/* Input size */ {8, 8, 20},
-                           /* output size */ {4, 4})
-          // No activation function, the next layer is softmax which functions as an
-          // activation function
-          .AddDenseLayer(10, symbolic::Identity)
-          .AddSoftmaxLayer(10);
-      classifier = std::make_unique<nnet::Nnet>(model, nnet::Nnet::Xavier, nnet::CrossEntropy);
-      // Load weights.
-      std::ifstream weight_file(kWeightFile);
-      std::stringstream buffer;
-      buffer << weight_file.rdbuf();
-      std::string weight_string = buffer.str();
-      if (weight_string.empty()) {
-        std::cout
-            << "Provided weight file is empty. Initializing with random weights"
-            << std::endl;
-      } else {
-        if (!classifier->LoadWeightsFromString(weight_string)) {
-          std::cerr << "Failed to load weights from file: " << kWeightFile << std::endl;
-          std::exit(1);
-        }
-      }
+    ImageProcessingModule() : detector_(kConfigFile, kWeightFile) {
     }
   void InputImage(uint8_t *image, int size_x, int size_y) {
     // This is actually a race condition since the calling thread might
@@ -259,7 +101,7 @@ class ImageProcessingModule {
         return;
       }
       if (std::get<0>(latest_image_) != nullptr) {
-        ScanLatestImage();
+        // Plug in darknet here with latest_image_.
       }
     }
   }
@@ -267,13 +109,6 @@ class ImageProcessingModule {
     std::lock_guard<std::mutex> lock(control_lock_);
     return !latest_targets_.empty();
   }
-  std::vector<Target> targets() {
-      std::lock_guard<std::mutex> lock(control_lock_);
-      std::vector<Target> targets_copy = latest_targets_;
-      latest_targets_.clear();
-      return targets_copy;
-  }
-
   bool done() { 
     std::lock_guard<std::mutex> lock(control_lock_);
     return done_;
@@ -286,59 +121,12 @@ class ImageProcessingModule {
     done_ = true;
   }
   private:
-    // Scan through the latest image, searching a 32x32 pixel box
-    // for potential targets (with 16-pixel overlap between each successive
-    // box).
-    void ScanLatestImage() {
-      for (int x = 0; x < std::get<1>(latest_image_); x+= 16) {
-        for (int y = 0; y < std::get<2>(latest_image_); y+= 16) {
-          std::unique_ptr<compute::ClBuffer> input = classifier->MakeBuffer(kInputSize);
-          PopulateSlice(input, x, y, 32, 32);
-          NormalizeInput(input);
-          std::unique_ptr<compute::ClBuffer> output = classifier->Evaluate(input);
-          Label label = OneHotEncodedOutputToEnum(output);
-          if (label != UNKNOWN) {
-            latest_targets_.push_back({label, std::make_pair(x, y)});
-          }
-        }
-      }
-      // Delete the image.
-      delete[] std::get<0>(latest_image_);
-      std::get<0>(latest_image_) = nullptr;
-    }
-
-    void PopulateSlice(const std::unique_ptr<compute::ClBuffer> &buffer, int x, int y, int width, int height) {
-      // The input is RGB, but the classifier expects images in
-      // <R-channel><G-channel><B-channel>, so we'll need to de-interlace all
-      // the R pixels, G pixels and B pixels to make separate images.
-      assert(buffer->size() == static_cast<size_t>(width * height * 3));
-
-      const int g_offset = width * height;
-      const int b_offset = width * height * 2;
-
-      uint8_t *image_data = std::get<0>(latest_image_);
-
-      for (int i = 0; i < width; ++i) {
-        for (int j = 0; j < height; ++j) {
-          // Calculate the index in the raw image. This means *3 since RGB are
-          // interlaced and offset by (x,y).
-          int image_index = 3 * (i + x + (j + y) * width);
-          // R-channel.
-          buffer->at(i + j * width) = image_data[image_index + 0];
-          // G-channel.
-          buffer->at(i + j * width + g_offset) = image_data[image_index + 1];
-          // B-channel.
-          buffer->at(i + j * width + b_offset) = image_data[image_index + 2];
-        }
-      }
-    }
-
     std::mutex control_lock_;
     bool done_ = false;
     // uint8_t *data, int size_x, int size_y.
     std::tuple<uint8_t *, int, int> latest_image_;
-    std::vector<Target> latest_targets_;
-    std::unique_ptr<nnet::Nnet> classifier;
+    std::vector<bbox_t> boxes_;
+    Detector detector_;
 };
 
 class RenderThread {
@@ -377,10 +165,10 @@ class RenderThread {
         if (bg_texture_) {
           SDL_RenderCopy(canvas_.renderer(), bg_texture_, NULL, NULL);
           SDL_RenderPresent(canvas_.renderer());
-          for (size_t i = 0; i < targets_.size(); ++i) {
-            canvas_.DrawPointAtPixel(targets_[i].coordinate.second,
-                                     targets_[i].coordinate.first);
-          }
+          //for (size_t i = 0; i < targets_.size(); ++i) {
+          //  canvas_.DrawPointAtPixel(targets_[i].coordinate.second,
+          //                           targets_[i].coordinate.first);
+          //}
         }
         ImGui_ImplSDL2_NewFrame(canvas_.window());
         io.DeltaTime = 1 / 60.0f;
@@ -394,13 +182,13 @@ class RenderThread {
 
         ImGui::Text("Video Framerate %f", video_framerate_);
         ImGui::Text("Render Loop Framerate %f", render_framerate);
-        ImGui::Text("Objects detected: %lu", targets_.size());
+        // ImGui::Text("Objects detected: %lu", targets_.size());
         // Render target squares.
-        for (size_t i = 0; i < targets_.size(); ++i) {
-          ImGui::Text("%s at (%i, %i).", LabelToString(targets_[i].label).c_str(),
-                      targets_[i].coordinate.first,
-                      targets_[i].coordinate.second);
-        }
+        // for (size_t i = 0; i < targets_.size(); ++i) {
+        //   ImGui::Text("%s at (%i, %i).", LabelToString(targets_[i].label).c_str(),
+        //               targets_[i].coordinate.first,
+        //               targets_[i].coordinate.second);
+        // }
         ImGui::End();
         // End of ImGui UI definition.
 
@@ -437,11 +225,6 @@ class RenderThread {
     previous_video_time_ = video_time;
   }
 
-  void SetTargets(const std::vector<ImageProcessingModule::Target> &target) {
-    std::lock_guard<std::mutex> lock(control_lock_);
-    targets_ = target;
-  }
-
   bool done() { 
     std::lock_guard<std::mutex> lock(control_lock_);
     return done_;
@@ -457,7 +240,6 @@ class RenderThread {
     SDL_Texture* bg_texture_ = nullptr;
     SdlCanvas canvas_;
     int width_, height_;
-    std::vector<ImageProcessingModule::Target> targets_;
 
     std::chrono::high_resolution_clock::time_point previous_video_time_;
     std::chrono::high_resolution_clock::time_point previous_render_time_; 
@@ -583,11 +365,6 @@ Host: 192.168.1.104:81
         }
         image_processing.InputImage(last_img->data, width, height);
       }
-    }
-
-    if (image_processing.targets_available()) {
-      std::vector<ImageProcessingModule::Target> targets = image_processing.targets();
-      render_module.SetTargets(targets);
     }
   }
   std::cout << "EXITED NORMALLY" << std::endl;
