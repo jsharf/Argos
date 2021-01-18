@@ -11,13 +11,17 @@ make(
         "OPENCV": "1",
         "LIBSO": "1",
     },
-    make_commands = ["cd darknet-darknet_yolo_v4_pre; make LIBSO=1 libdarknet.so; cp libdarknet.so $INSTALLDIR/lib/"],
+    make_commands = ["make GPU=1 CUDNN=1 LIBSO=1 OPENCV=1 libdarknet.so; cp libdarknet.so $INSTALLDIR/lib/"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
-  name = "darknet",
-  hdrs = ["include/yolo_v2_class.hpp"],
-  srcs = [],
-  deps = [":make_darknet"],
-  alwayslink=True,
+    name = "darknet",
+    srcs = [],
+    hdrs = [],
+    deps = [
+        "@darknet//:darknet_cc_api",
+        ":make_darknet",
+    ],
+    visibility = ["//visibility:public"],
 )

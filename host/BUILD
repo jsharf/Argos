@@ -11,6 +11,8 @@ cc_binary(
     ],
     data = [
         ":yolov4_model",
+        # Used to access the object ID file.
+        "@darknet//:darknet_sources",
     ],
     linkopts = select({
         "@clutil//:osx": ["-framework OpenCL"],
@@ -28,7 +30,7 @@ cc_binary(
     deps = [
         ":cam_parser",
         "//host/netpipe:tcp",
-        "//third_party/darknet:make_darknet",
+        "//third_party/darknet:darknet",
         "@libjpeg_turbo//:turbojpeg",
         "@graphics//:sdl_canvas",
         "@clutil//:util",

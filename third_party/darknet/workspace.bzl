@@ -7,5 +7,6 @@ def repo():
         "https://github.com/AlexeyAB/darknet/archive/darknet_yolo_v4_pre.tar.gz",
     ],
     build_file = "//third_party/darknet:darknet.BUILD",
+    strip_prefix = "darknet-darknet_yolo_v4_pre"
   )
 

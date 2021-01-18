@@ -6,12 +6,14 @@
 #include "dear_imgui/imgui.h"
 #include "dear_imgui/examples/imgui_impl_sdl.h"
 #include "libjpeg_turbo/turbojpeg.h"
-#include "darknet/include/yolo_v2_class.hpp"
+#include "include/yolo_v2_class.hpp"
 
 #include <unistd.h>
 #include <atomic>
+#include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cctype>
 #include <ctime>
 #include <fstream>
 #include <future>
@@ -37,11 +39,38 @@ static constexpr int kDecompressionFlags = TJFLAG_ACCURATEDCT;
 
 inline constexpr char kSaveDirectoryPrefix[] = "/home/sharf/argos_data/";
 inline constexpr char kWeightFile[] = "host/yolov4.weights";
-inline constexpr char kConfigFile[] = "host/yolov4.cfg
+inline constexpr char kConfigFile[] = "host/yolov4.cfg";
+inline constexpr char kObjectIdsFile[] = "darknet/data/coco.names";
 
 bool file_exists(const std::string &path) {
   std::ifstream f(path.c_str());
   return f.good();
+}
+
+std::unique_ptr<std::unordered_map<int, std::string>> LoadObjectIds(const std::string &filepath) {
+    std::cout << "Loading object ids from file " << filepath << std::endl;
+    std::ifstream object_file(filepath.c_str());
+    std::string line;
+    auto object_ids = std::make_unique<std::unordered_map<int, std::string>>();
+    int line_number = 1;
+    while (std::getline(object_file, line)) {
+      line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
+      (*object_ids)[line_number] = line;
+    }
+    return object_ids;
+}
+
+std::string ObjIdToString(const int obj_id) {
+  static std::unique_ptr<std::unordered_map<int, std::string>> obj_ids;
+  if (!obj_ids) {
+    obj_ids = LoadObjectIds(kObjectIdsFile);
+  }
+
+  if (obj_ids->count(obj_id) != 0) {
+    return obj_ids->at(obj_id);
+  }
+
+  return "invalid";
 }
 
 int CalculateFrameStart(const std::string &prefix) {
@@ -81,33 +110,53 @@ class ImageProcessingModule {
     ImageProcessingModule() : detector_(kConfigFile, kWeightFile) {
     }
   void InputImage(uint8_t *image, int size_x, int size_y) {
-    // This is actually a race condition since the calling thread might
-    // deallocate image* before we're done using it. Modify this function to
-    // make a copy.
     std::lock_guard<std::mutex> lock(control_lock_);
-    if (std::get<0>(latest_image_) != nullptr) {
-      delete[] std::get<0>(latest_image_);
+    if (latest_image_.data != nullptr) {
+      delete[] latest_image_.data;
+      latest_image_.data = nullptr;
     }
-    latest_image_ = std::make_tuple(nullptr, size_x, size_y);
-    std::get<0>(latest_image_) = new uint8_t[size_x * size_y * 3];  // Each pixel is 3 bytes.
-    memcpy(std::get<0>(latest_image_), image, size_x * size_y * 3);
-    latest_targets_.clear();
+    latest_image_ = {size_y, size_x, 3, nullptr};
+    latest_image_.data = new float[size_x * size_y * 3];  // Each pixel is 3 bytes.
+
+    for (int i = 0; i < size_y; i++) {
+      for (int j = 0; j < size_x; j++) {
+        for (int k = 0; k < 3; k++) {
+          const int pixel_index = (i * size_x + j) * 3 + k;
+          latest_image_.data[pixel_index] = static_cast<float>(image[pixel_index]) / 255.0f;
+        }
+      }
+    }
+    boxes_.clear();
   }
   void operator()() {
     while (true) {
       usleep(10);
-      std::lock_guard<std::mutex> lock(control_lock_);
-      if (done_) {
-        return;
+      {
+        std::lock_guard<std::mutex> lock(control_lock_);
+        if (done_) {
+          // Cleanup and exit.
+          if (latest_image_.data != nullptr) {
+            delete[] latest_image_.data;
+            latest_image_.data = nullptr;
+          }
+          return;
+        }
       }
-      if (std::get<0>(latest_image_) != nullptr) {
+      if (latest_image_.data != nullptr) {
         // Plug in darknet here with latest_image_.
+        std::cout << "Calling detect!" << std::endl;
+        const auto boxes = detector_.detect(latest_image_, 0);
+        {
+          std::lock_guard<std::mutex> lock(box_lock_);
+          boxes_ = boxes;
+        }
+        std::cout << "DONE." << std::endl;
       }
     }
   }
-  bool targets_available() {
-    std::lock_guard<std::mutex> lock(control_lock_);
-    return !latest_targets_.empty();
+  std::vector<bbox_t> objects_detected() {
+    std::lock_guard<std::mutex> lock(box_lock_);
+    return boxes_;
   }
   bool done() { 
     std::lock_guard<std::mutex> lock(control_lock_);
@@ -115,16 +164,18 @@ class ImageProcessingModule {
   }
   void Exit() {
     std::lock_guard<std::mutex> lock(control_lock_);
-    if (std::get<0>(latest_image_) != nullptr) {
-      delete[] std::get<0>(latest_image_);
+    if (latest_image_.data != nullptr) {
+      delete[] latest_image_.data;
+      latest_image_.data = nullptr;
     }
     done_ = true;
   }
   private:
     std::mutex control_lock_;
+    std::mutex box_lock_;
     bool done_ = false;
     // uint8_t *data, int size_x, int size_y.
-    std::tuple<uint8_t *, int, int> latest_image_;
+    image_t latest_image_ = {0, 0, 0, nullptr};
     std::vector<bbox_t> boxes_;
     Detector detector_;
 };
@@ -165,10 +216,10 @@ class RenderThread {
         if (bg_texture_) {
           SDL_RenderCopy(canvas_.renderer(), bg_texture_, NULL, NULL);
           SDL_RenderPresent(canvas_.renderer());
-          //for (size_t i = 0; i < targets_.size(); ++i) {
-          //  canvas_.DrawPointAtPixel(targets_[i].coordinate.second,
-          //                           targets_[i].coordinate.first);
-          //}
+          // for (size_t i = 0; i < targets_.size(); ++i) {
+          //   canvas_.DrawPointAtPixel(targets_[i].y,
+          //                            targets_[i].x);
+          // }
         }
         ImGui_ImplSDL2_NewFrame(canvas_.window());
         io.DeltaTime = 1 / 60.0f;
@@ -182,13 +233,13 @@ class RenderThread {
 
         ImGui::Text("Video Framerate %f", video_framerate_);
         ImGui::Text("Render Loop Framerate %f", render_framerate);
-        // ImGui::Text("Objects detected: %lu", targets_.size());
+        ImGui::Text("Objects detected: %lu", targets_.size());
         // Render target squares.
-        // for (size_t i = 0; i < targets_.size(); ++i) {
-        //   ImGui::Text("%s at (%i, %i).", LabelToString(targets_[i].label).c_str(),
-        //               targets_[i].coordinate.first,
-        //               targets_[i].coordinate.second);
-        // }
+        for (size_t i = 0; i < targets_.size(); ++i) {
+          ImGui::Text("%s at (%i, %i).", ObjIdToString(targets_[i].obj_id).c_str(),
+                      targets_[i].x,
+                      targets_[i].y);
+        }
         ImGui::End();
         // End of ImGui UI definition.
 
@@ -225,6 +276,11 @@ class RenderThread {
     previous_video_time_ = video_time;
   }
 
+  void SetObjectsDetected(std::vector<bbox_t> objects) {
+    std::lock_guard<std::mutex> lock(control_lock_);
+    targets_ = objects;
+  }
+
   bool done() { 
     std::lock_guard<std::mutex> lock(control_lock_);
     return done_;
@@ -240,6 +296,7 @@ class RenderThread {
     SDL_Texture* bg_texture_ = nullptr;
     SdlCanvas canvas_;
     int width_, height_;
+    std::vector<bbox_t> targets_;
 
     std::chrono::high_resolution_clock::time_point previous_video_time_;
     std::chrono::high_resolution_clock::time_point previous_render_time_; 
@@ -251,10 +308,11 @@ int main(int argc, char *argv[]) {
     std::cerr << "Usage: host_client server_ip server_port [file_prefix]." << std::endl;
     return -1;
   }
+  SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
 
   // SDL scene.
-  const int width = 1280;
-  const int height = 720;
+  const int width = 800;
+  const int height = 600;
 
   const std::string kFilePrefix = (argc == 4) ? argv[3] : "";
 
@@ -310,7 +368,6 @@ Host: 192.168.1.104:81
     uint8_t recv_buffer[16 * 1024];  // 16 KB.
     int data_len = socket.Read(recv_buffer, sizeof(recv_buffer)-1);
     if (data_len == -1) {
-      std::cout << "\nDone!" << std::endl;
       return 0;
     }
     recv_buffer[data_len] = '\0';
@@ -364,6 +421,11 @@ Host: 192.168.1.104:81
           continue;
         }
         image_processing.InputImage(last_img->data, width, height);
+        const std::vector<bbox_t> objects = image_processing.objects_detected();
+        if (objects.size() != 0) {
+          // do something with render_module and objects.
+          render_module.SetObjectsDetected(objects);
+        }
       }
     }
   }
