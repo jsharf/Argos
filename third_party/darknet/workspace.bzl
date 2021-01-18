@@ -1,12 +1,11 @@
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "new_git_repository")
 
 def repo():
-  http_archive(
+  new_git_repository(
     name = "darknet",
-    urls = [ 
-        "https://github.com/AlexeyAB/darknet/archive/darknet_yolo_v4_pre.tar.gz",
-    ],
+    remote = "https://github.com/AlexeyAB/darknet.git",
+    commit = "103d301ccbc19e47e002005bdfdbaf07a92cd880",
     build_file = "//third_party/darknet:darknet.BUILD",
-    strip_prefix = "darknet-darknet_yolo_v4_pre"
+    shallow_since = "1599040208 -0700",
   )
 

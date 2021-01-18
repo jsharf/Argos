@@ -45,7 +45,9 @@ filegroup(
     name = "yolov4_model",
     srcs = [
         "yolov4.cfg",
+        "yolov4-tiny.cfg",
         "yolov4.weights",
+        "yolov4-tiny.weights",
     ],
 )
 

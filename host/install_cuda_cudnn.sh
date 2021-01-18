@@ -20,9 +20,9 @@ sudo apt-get update
 
 # Install development and runtime libraries (~4GB)
 sudo apt-get install --no-install-recommends \
-    cuda-11-0 \
-    libcudnn8=8.0.4.30-1+cuda11.0  \
-    libcudnn8-dev=8.0.4.30-1+cuda11.0
+    cuda-11-1 \
+    libcudnn8=8.0.5.39-1+cuda11.1  \
+    libcudnn8-dev=8.0.5.39-1+cuda11.1
 
 
 # Install TensorRT. Requires that libcudnn8 is installed above.

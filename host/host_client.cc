@@ -40,7 +40,7 @@ static constexpr int kDecompressionFlags = TJFLAG_ACCURATEDCT;
 inline constexpr char kSaveDirectoryPrefix[] = "/home/sharf/argos_data/";
 inline constexpr char kWeightFile[] = "host/yolov4.weights";
 inline constexpr char kConfigFile[] = "host/yolov4.cfg";
-inline constexpr char kObjectIdsFile[] = "darknet/data/coco.names";
+inline constexpr char kObjectIdsFile[] = "external/darknet/data/coco.names";
 
 bool file_exists(const std::string &path) {
   std::ifstream f(path.c_str());
@@ -50,12 +50,17 @@ bool file_exists(const std::string &path) {
 std::unique_ptr<std::unordered_map<int, std::string>> LoadObjectIds(const std::string &filepath) {
     std::cout << "Loading object ids from file " << filepath << std::endl;
     std::ifstream object_file(filepath.c_str());
+    if (!object_file.good()) {
+      std::cerr << "Invalid object ID file: " << filepath << std::endl;
+      std::exit(1);
+    }
     std::string line;
     auto object_ids = std::make_unique<std::unordered_map<int, std::string>>();
-    int line_number = 1;
+    int id = 0;
     while (std::getline(object_file, line)) {
       line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
-      (*object_ids)[line_number] = line;
+      (*object_ids)[id++] = line;
+      std::cout << line << std::endl;
     }
     return object_ids;
 }
@@ -121,12 +126,12 @@ class ImageProcessingModule {
     for (int i = 0; i < size_y; i++) {
       for (int j = 0; j < size_x; j++) {
         for (int k = 0; k < 3; k++) {
-          const int pixel_index = (i * size_x + j) * 3 + k;
-          latest_image_.data[pixel_index] = static_cast<float>(image[pixel_index]) / 255.0f;
+          const int darknet_index = k * size_y * size_x + (i * size_x + j);
+          const int source_index = (i * size_x + j) * 3 + k;
+          latest_image_.data[darknet_index] = static_cast<float>(image[source_index]) / 255.0f;
         }
       }
     }
-    boxes_.clear();
   }
   void operator()() {
     while (true) {
@@ -143,20 +148,33 @@ class ImageProcessingModule {
         }
       }
       if (latest_image_.data != nullptr) {
-        // Plug in darknet here with latest_image_.
         std::cout << "Calling detect!" << std::endl;
-        const auto boxes = detector_.detect(latest_image_, 0);
+        const auto image = latest_image_;
+        const auto boxes = detector_.detect(image);
         {
           std::lock_guard<std::mutex> lock(box_lock_);
-          boxes_ = boxes;
+          untracked_objects_.clear();
+          objects_.clear();
+          for (size_t i = 0; i < boxes.size(); ++i) {
+            if (boxes[i].track_id == 0) {
+              untracked_objects_.push_back(boxes[i]);
+              continue;
+            }
+            objects_[boxes[i].track_id] = boxes[i];
+          }
         }
         std::cout << "DONE." << std::endl;
       }
     }
   }
-  std::vector<bbox_t> objects_detected() {
+  // Returns a map from persistent tracking ID -> object.
+  std::unordered_map<int, bbox_t> objects() {
     std::lock_guard<std::mutex> lock(box_lock_);
-    return boxes_;
+    return objects_;
+  }
+  std::vector<bbox_t> untracked_objects() {
+    std::lock_guard<std::mutex> lock(box_lock_);
+    return untracked_objects_;
   }
   bool done() { 
     std::lock_guard<std::mutex> lock(control_lock_);
@@ -176,7 +194,8 @@ class ImageProcessingModule {
     bool done_ = false;
     // uint8_t *data, int size_x, int size_y.
     image_t latest_image_ = {0, 0, 0, nullptr};
-    std::vector<bbox_t> boxes_;
+    std::unordered_map<int, bbox_t> objects_;
+    std::vector<bbox_t> untracked_objects_;
     Detector detector_;
 };
 
@@ -421,7 +440,15 @@ Host: 192.168.1.104:81
           continue;
         }
         image_processing.InputImage(last_img->data, width, height);
-        const std::vector<bbox_t> objects = image_processing.objects_detected();
+        const auto tracked_objects = image_processing.objects();
+        const auto untracked_objects = image_processing.untracked_objects();
+        std::vector<bbox_t> objects;
+        for (const auto & [id, obj] : tracked_objects) {
+          objects.push_back(obj);
+        }
+        for (const auto &obj : untracked_objects) {
+          objects.push_back(obj);
+        }
         if (objects.size() != 0) {
           // do something with render_module and objects.
           render_module.SetObjectsDetected(objects);
