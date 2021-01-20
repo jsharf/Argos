@@ -31,6 +31,7 @@ cc_binary(
         ":cam_parser",
         "//host/netpipe:tcp",
         "//third_party/darknet:darknet",
+        "//third_party/sdl2_ttf:sdl_ttf",
         "@libjpeg_turbo//:turbojpeg",
         "@graphics//:sdl_canvas",
         "@clutil//:util",

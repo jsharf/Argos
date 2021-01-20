@@ -1,6 +1,9 @@
+#define TRACK_OPTFLOW
+
 #include "host/netpipe/tcp.h"
 #include "host/cam_parser.h"
 #include "linux_sdl/include/SDL.h"
+#include "SDL_ttf.h"
 #include "graphics/sdl_canvas.h"
 #include "imgui_sdl/imgui_sdl.h"
 #include "dear_imgui/imgui.h"
@@ -60,7 +63,6 @@ std::unique_ptr<std::unordered_map<int, std::string>> LoadObjectIds(const std::s
     while (std::getline(object_file, line)) {
       line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
       (*object_ids)[id++] = line;
-      std::cout << line << std::endl;
     }
     return object_ids;
 }
@@ -148,7 +150,6 @@ class ImageProcessingModule {
         }
       }
       if (latest_image_.data != nullptr) {
-        std::cout << "Calling detect!" << std::endl;
         const auto image = latest_image_;
         const auto boxes = detector_.detect(image);
         {
@@ -163,7 +164,6 @@ class ImageProcessingModule {
             objects_[boxes[i].track_id] = boxes[i];
           }
         }
-        std::cout << "DONE." << std::endl;
       }
     }
   }
@@ -211,6 +211,7 @@ class RenderThread {
       previous_render_time_ = std::chrono::high_resolution_clock::now(); 
     }
     void operator()() {
+      TTF_Init();
       while (true) {
         usleep(1000);  // 1 ms.
         std::lock_guard<std::mutex> lock(control_lock_);
@@ -233,12 +234,31 @@ class RenderThread {
         // Clear the canvas before re-rendering.
         canvas_.Clear();
         if (bg_texture_) {
+          TTF_Font* font = TTF_OpenFont("/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf", 50); //this opens a font style and sets a size
+          if (font == nullptr) {
+            std::cerr << "Error loading font file: " << TTF_GetError() << std::endl;
+            std::exit(1);
+          }
           SDL_RenderCopy(canvas_.renderer(), bg_texture_, NULL, NULL);
+          // Render object boxes.
+          for (size_t i = 0; i < targets_.size(); ++i) {
+            const auto &t = targets_[i];
+            SDL_Rect box{(int)t.x,(int)t.y,(int)t.w,(int)t.h};
+            SDL_SetRenderDrawColor(canvas_.renderer(), 255, 255, 255, 255);
+            SDL_RenderDrawRect(canvas_.renderer(), &box);
+            const std::string label = ObjIdToString(targets_[i].obj_id);
+            SDL_Surface* surfaceMessage = TTF_RenderText_Blended(font, label.c_str(), {255, 255, 255});
+            SDL_Texture* Message = SDL_CreateTextureFromSurface(canvas_.renderer(), surfaceMessage);
+            SDL_Rect Message_rect;
+            Message_rect.x = t.x;
+            Message_rect.y = t.y;
+            Message_rect.w = 100;
+            Message_rect.h = 20;
+            SDL_RenderCopy(canvas_.renderer(), Message, NULL, &Message_rect);
+            SDL_FreeSurface(surfaceMessage);
+            SDL_DestroyTexture(Message);
+          }
           SDL_RenderPresent(canvas_.renderer());
-          // for (size_t i = 0; i < targets_.size(); ++i) {
-          //   canvas_.DrawPointAtPixel(targets_[i].y,
-          //                            targets_[i].x);
-          // }
         }
         ImGui_ImplSDL2_NewFrame(canvas_.window());
         io.DeltaTime = 1 / 60.0f;
@@ -436,7 +456,8 @@ Host: 192.168.1.104:81
         last_img = std::move(image);
         render_module.SetBGImage(last_img->data, last_img->data_size);
         if (last_img->data_size != width * height * 3) {
-          std::cerr << "Could not run classifier as image did not fit the expected resolution.";
+          std::cerr << "Could not run classifier as image did not fit the expected resolution." << std::endl;
+          std::cerr << last_img->data_size << " != " << width * height * 3 << std::endl;
           continue;
         }
         image_processing.InputImage(last_img->data, width, height);

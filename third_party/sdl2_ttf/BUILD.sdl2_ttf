@@ -1,0 +1,11 @@
+filegroup(
+    name = "sdl_ttf_sources",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+  name = "sdl_ttf_api",
+  hdrs = ["SDL_ttf.h"],
+  visibility = ["//visibility:public"],
+)
