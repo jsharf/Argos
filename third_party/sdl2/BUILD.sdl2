@@ -94,7 +94,9 @@ cc_library(
     '//conditions:default': [],
   }),
   copts = select({
-    '//conditions:default': [],
+    '//conditions:default': [
+      "-Wno-implicit-function-declaration",
+    ],
     ':linux_x86_64': [
       '-D%s' % d
       for d in DEFS_LINUX

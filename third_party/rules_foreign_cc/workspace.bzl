@@ -4,9 +4,9 @@ def repo():
   # This repository is used to build foreign projects (makefile & cmake) and link
   # them with bazel binaries. In particularly, we use this to build darknet.
   http_archive(
-     name = "rules_foreign_cc",
-     strip_prefix = "rules_foreign_cc-master",
-     url = "https://github.com/bazelbuild/rules_foreign_cc/archive/master.zip",
-     sha256 = "3e6b0691fc57db8217d535393dcc2cf7c1d39fc87e9adb6e7d7bab1483915110",
+      name = "rules_foreign_cc",
+      sha256 = "c2cdcf55ffaf49366725639e45dedd449b8c3fe22b54e31625eb80ce3a240f1e",
+      strip_prefix = "rules_foreign_cc-0.1.0",
+      url = "https://github.com/bazelbuild/rules_foreign_cc/archive/0.1.0.zip",
   )
 
